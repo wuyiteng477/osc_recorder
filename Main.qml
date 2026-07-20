@@ -15,7 +15,8 @@ ApplicationWindow {
     property string currentPage: "realtime"
     property bool simulationRunning: false
     property bool channelEnabled: true
-    property string displayMode: "stable"
+    property string displayMode: "update"
+    property bool gridVisible: true
     property real voltsPerDiv: 1.0
     property real timePerDivMs: 1.0
     property real verticalOffsetV: 0.0
@@ -32,9 +33,13 @@ ApplicationWindow {
     property int historyRevision: 0
     property bool followLatest: true
     property real historyOffsetSeconds: 0.0
+    property var updateFrameSamples: []
+    property int updateFrameRevision: 0
     readonly property bool hasSimulationData: historyCount > 0
     readonly property real historyStartTime: historyCount > 0 ? historyTimes[historyStartIndex] : 0.0
     readonly property real visibleTimeSeconds: timePerDivMs * 10 / 1000
+    readonly property real horizontalStepSeconds: timePerDivMs / 1000
+    readonly property real historyEpsilon: 0.000000001
     readonly property color panelColor: "#15212c"
     readonly property color borderColor: "#314252"
     readonly property color textColor: "#d9e4ec"
@@ -71,6 +76,24 @@ ApplicationWindow {
         const event = eventPhase < 0.22 ? -0.28 * Math.sin(Math.PI * eventPhase / 0.22) : 0
         return signalAmplitudeV * (amplitude * (carrier + harmonic) + baseline + noise + event)
     }
+    function generateUpdateFrame(visibleSeconds, pointCount) {
+        const frame = new Array(pointCount)
+        const actualStart = latestSampleTime - visibleSeconds
+        for (let i = 0; i < pointCount; ++i) {
+            const relativeTime = pointCount > 1 ? i / (pointCount - 1) * visibleSeconds : 0
+            const actualTime = actualStart + relativeTime
+            const carrier = Math.sin(2 * Math.PI * signalFrequencyHz * relativeTime)
+            const harmonic = 0.08 * Math.sin(2 * Math.PI * signalFrequencyHz * 3 * relativeTime + 0.4)
+            const amplitude = 1.0 + 0.12 * Math.sin(2 * Math.PI * 0.09 * actualTime + 0.7)
+            const baseline = 0.07 * Math.sin(2 * Math.PI * 0.045 * actualTime + 0.2)
+            const noise = 0.012 * Math.sin(2 * Math.PI * 217.7 * actualTime) + 0.006 * Math.sin(2 * Math.PI * 509.3 * actualTime + 0.3)
+            const eventPhase = ((actualTime % 4.7) + 4.7) % 4.7
+            const event = eventPhase < 0.22 ? -0.28 * Math.sin(Math.PI * eventPhase / 0.22) : 0
+            frame[i] = signalAmplitudeV * (amplitude * (carrier + harmonic) + baseline + noise + event)
+        }
+        updateFrameSamples = frame
+        updateFrameRevision += 1
+    }
     function appendSimulationSamples(batchSize) {
         initializeHistory()
         const interval = 1.0 / simulationSampleRate
@@ -90,15 +113,31 @@ ApplicationWindow {
     function maximumHistoryOffset() { return Math.max(0, latestSampleTime - historyStartTime - visibleTimeSeconds) }
     function clampHistoryOffset() {
         historyOffsetSeconds = Math.min(Math.max(0, historyOffsetSeconds), maximumHistoryOffset())
-        followLatest = historyOffsetSeconds <= 0.000001
+        if (historyOffsetSeconds <= historyEpsilon) historyOffsetSeconds = 0
+        followLatest = historyOffsetSeconds === 0
     }
     function startSimulation() { if (!simulationRunning) { simulationRunning = true; appendLog(qsTr("模拟采集已启动")) } }
     function stopSimulation() { if (simulationRunning) { simulationRunning = false; appendLog(qsTr("模拟采集已停止")) } }
     function setVoltsPerDiv(value) { if (voltsPerDiv !== value) { voltsPerDiv = value; appendLog("CH1 " + qsTr("量程已设置为 ") + formatNumber(value) + " V/div") } }
-    function setTimePerDiv(value) { if (timePerDivMs !== value) { timePerDivMs = value; clampHistoryOffset(); appendLog(qsTr("时基已设置为 ") + formatNumber(value) + " ms/div") } }
+    function setTimePerDiv(value) {
+        const supportedValue = Math.min(200, value)
+        if (timePerDivMs === supportedValue) return
+        const oldVisibleTime = visibleTimeSeconds
+        const wasFollowing = followLatest && historyOffsetSeconds <= historyEpsilon
+        const oldViewCenter = latestSampleTime - historyOffsetSeconds - oldVisibleTime / 2
+        timePerDivMs = supportedValue
+        if (wasFollowing) { historyOffsetSeconds = 0; followLatest = true }
+        else {
+            const newViewRight = oldViewCenter + visibleTimeSeconds / 2
+            historyOffsetSeconds = latestSampleTime - newViewRight
+            clampHistoryOffset()
+        }
+        appendLog(value > 200 ? qsTr("当前时基已调整为支持范围上限 200 ms/div") : qsTr("时基已设置为 ") + formatNumber(supportedValue) + " ms/div")
+    }
     function setVerticalOffset(value) { const bounded = Math.max(-5, Math.min(5, value)); if (verticalOffsetV !== bounded) { verticalOffsetV = bounded; appendLog("CH1 " + qsTr("垂直偏移已设置为 ") + formatNumber(bounded) + " V") } }
     function setChannelEnabled(enabled) { if (channelEnabled !== enabled) { channelEnabled = enabled; appendLog(enabled ? "CH1 " + qsTr("已开启") : "CH1 " + qsTr("已关闭")) } }
-    function changeDisplayMode(mode) { if (displayMode !== mode) { displayMode = mode; appendLog(mode === "roll" ? qsTr("已切换到滚动显示") : qsTr("已切换到稳定显示")) } }
+    function changeDisplayMode(mode) { if (displayMode !== mode) { displayMode = mode; appendLog(mode === "roll" ? qsTr("已切换到滚动模式") : qsTr("已切换到更新模式")) } }
+    function setGridVisible(visible) { if (gridVisible !== visible) { gridVisible = visible; appendLog(visible ? qsTr("栅格显示已开启") : qsTr("栅格显示已关闭")) } }
     function historyIndex(logicalIndex) { return (historyStartIndex + logicalIndex) % historyCapacity }
     function verticalFit() {
         if (!hasSimulationData) { appendLog(qsTr("当前没有可用于垂直适配的数据"), qsTr("提示")); return }
@@ -126,20 +165,23 @@ ApplicationWindow {
     function moveHistoryLeft() {
         if (!hasSimulationData) return
         const oldOffset = historyOffsetSeconds
-        historyOffsetSeconds = Math.min(maximumHistoryOffset(), historyOffsetSeconds + visibleTimeSeconds * 0.5)
-        followLatest = historyOffsetSeconds <= 0.000001
+        historyOffsetSeconds = Math.min(maximumHistoryOffset(), historyOffsetSeconds + horizontalStepSeconds)
+        clampHistoryOffset()
         if (historyOffsetSeconds !== oldOffset) appendLog(qsTr("水平位置已移至距最新 ") + formatDuration(historyOffsetSeconds))
     }
     function moveHistoryRight() {
-        if (!hasSimulationData || historyOffsetSeconds <= 0.000001) return
-        historyOffsetSeconds = Math.max(0, historyOffsetSeconds - visibleTimeSeconds * 0.5)
-        followLatest = historyOffsetSeconds <= 0.000001
+        if (!hasSimulationData || historyOffsetSeconds <= historyEpsilon) return
+        historyOffsetSeconds = Math.max(0, historyOffsetSeconds - horizontalStepSeconds)
+        clampHistoryOffset()
         appendLog(followLatest ? qsTr("水平位置已归零，已回到最新数据") : qsTr("水平位置已移至距最新 ") + formatDuration(historyOffsetSeconds))
     }
     function clearHistory() { historyStartIndex = 0; historyCount = 0; historyOffsetSeconds = 0; followLatest = true; historyRevision += 1; appendLog("CH1 " + qsTr("模拟历史已清除")) }
 
     ListModel { id: logModel }
-    Component.onCompleted: { appendLog(qsTr("软件启动完成")); appendLog(qsTr("当前运行在模拟模式")); appendLog(qsTr("尚未连接采集设备"), qsTr("提示")) }
+    Component.onCompleted: {
+        if (timePerDivMs > 200) { timePerDivMs = 200; appendLog(qsTr("当前时基已调整为支持范围上限 200 ms/div")) }
+        appendLog(qsTr("软件启动完成")); appendLog(qsTr("当前运行在模拟模式")); appendLog(qsTr("尚未连接采集设备"), qsTr("提示"))
+    }
     Timer { interval: 20; running: window.simulationRunning; repeat: true; onTriggered: window.appendSimulationSamples(100) }
     component StatusItem: RowLayout { required property string label; required property string value; property color valueColor: window.textColor; spacing: 6; Label { text: parent.label + ":"; color: window.mutedTextColor; font.pixelSize: 13 } Label { text: parent.value; color: parent.valueColor; font.pixelSize: 13; font.bold: true } }
 
@@ -155,8 +197,8 @@ ApplicationWindow {
             NavigationPanel { Layout.preferredWidth: 176; Layout.fillHeight: true; currentPage: window.currentPage; onPageRequested: page => window.changePage(page) }
             StackLayout { Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: ["realtime", "channels", "acquisition", "recording", "system"].indexOf(window.currentPage)
                 RowLayout { spacing: 0
-                    WaveformPanel { Layout.fillWidth: true; Layout.fillHeight: true; simulationRunning: window.simulationRunning; hasSimulationData: window.hasSimulationData; channelEnabled: window.channelEnabled; displayMode: window.displayMode; voltsPerDiv: window.voltsPerDiv; timePerDivMs: window.timePerDivMs; verticalOffsetV: window.verticalOffsetV; historyTimes: window.historyTimes; historyValues: window.historyValues; historyStartIndex: window.historyStartIndex; historyCount: window.historyCount; historyCapacity: window.historyCapacity; latestSampleTime: window.latestSampleTime; historyOffsetSeconds: window.historyOffsetSeconds; historyRevision: window.historyRevision; onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
-                    ParameterPanel { Layout.preferredWidth: 250; Layout.fillHeight: true; channelEnabled: window.channelEnabled; voltsPerDiv: window.voltsPerDiv; timePerDivMs: window.timePerDivMs; verticalOffsetV: window.verticalOffsetV; displayMode: window.displayMode; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.historyOffsetSeconds; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); onChannelEnabledRequested: enabled => window.setChannelEnabled(enabled); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetPositions() }
+                    WaveformPanel { Layout.fillWidth: true; Layout.fillHeight: true; activePage: window.currentPage === "realtime"; simulationRunning: window.simulationRunning; hasSimulationData: window.hasSimulationData; channelEnabled: window.channelEnabled; displayMode: window.displayMode; gridVisible: window.gridVisible; voltsPerDiv: window.voltsPerDiv; timePerDivMs: window.timePerDivMs; verticalOffsetV: window.verticalOffsetV; historyTimes: window.historyTimes; historyValues: window.historyValues; historyStartIndex: window.historyStartIndex; historyCount: window.historyCount; historyCapacity: window.historyCapacity; samplePeriodSeconds: 1 / window.simulationSampleRate; latestSampleTime: window.latestSampleTime; historyOffsetSeconds: window.historyOffsetSeconds; historyRevision: window.historyRevision; updateFrameSamples: window.updateFrameSamples; updateFrameRevision: window.updateFrameRevision; onUpdateFrameRequested: (visibleSeconds, pointCount) => window.generateUpdateFrame(visibleSeconds, pointCount); onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
+                    ParameterPanel { Layout.preferredWidth: 250; Layout.fillHeight: true; channelEnabled: window.channelEnabled; voltsPerDiv: window.voltsPerDiv; timePerDivMs: window.timePerDivMs; horizontalStepSeconds: window.horizontalStepSeconds; verticalOffsetV: window.verticalOffsetV; displayMode: window.displayMode; gridVisible: window.gridVisible; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.historyOffsetSeconds; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); onChannelEnabledRequested: enabled => window.setChannelEnabled(enabled); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onGridVisibleRequested: visible => window.setGridVisible(visible); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetPositions() }
                 }
                 ChannelSettingsPage { } AcquisitionSettingsPage { } RecordingPage { } SystemStatusPage { simulationRunning: window.simulationRunning }
             }
