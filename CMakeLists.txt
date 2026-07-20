@@ -22,6 +22,13 @@ qt_add_qml_module(apposc_recorder
     URI osc_recorder
     QML_FILES
         Main.qml
+        NavigationPanel.qml
+        WaveformPanel.qml
+        ParameterPanel.qml
+        ChannelSettingsPage.qml
+        AcquisitionSettingsPage.qml
+        RecordingPage.qml
+        SystemStatusPage.qml
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
