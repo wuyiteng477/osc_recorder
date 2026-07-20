@@ -37,6 +37,14 @@ There is still exactly one 20 ms acquisition timer in `Main.qml`, one shared tim
 
 For verification, start simulation with the default four channels, then use the channel settings page to enable/show channels from several boards. Confirm the legend strip can be dragged horizontally, hidden channels do not receive display frames, and repeated start/stop does not create additional timers. The QML/C++ design uses only Qt Quick and standard QML/JavaScript facilities, with no Windows API or platform-specific path assumptions; it remains compatible with the Qt 6.8+ / C++20 project configuration and Linux ARM64 targets.
 
+### Dynamic multi-view waveform layout
+
+Each enabled, visible channel maps to exactly one waveform view. The page begins with CH1 only; enabling another channel appends one view, and disabling a channel removes its view. Between one and eight channels are supported. Non-fixed counts such as 3, 5, and 7 are arranged as equal-height vertical regions that fill the Canvas without empty placeholders. Channel order follows the 64-channel model order.
+
+All views share one Canvas, one time axis, one `ChannelStore`, and the same ring buffers. Each region draws one curve plus its name, color, latest value, V/div, zero reference, and separator grid. Display work is capped at eight enabled channels; update-mode frame generation receives only those channel indices, while the per-view point budget is capped at 256–2048 points and reduced to 512 points for higher view counts. Acquisition batches and retained history are not interrupted by channel additions, removals, or reordering.
+
+To verify: start on the CH1 single view, enable channels to produce 2–8 equal-height views, then disable middle channels and confirm the remaining views reflow without clearing history. Stop sampling and inspect retained curves/history. No additional per-channel timers, canvas instances, or acquisition buffers are created.
+
 - `Main.qml` owns the single `simulationRunning` state and the single 20 ms shared acquisition timer.
 - `ChannelStore.qml` owns fixed-capacity per-channel history buffers; `sampleRevision` advances after each batch and `frameRevision` after frame generation.
 - `WaveformPanel.qml` observes those revisions and requests a coalesced Canvas repaint. Starting simulation inserts an immediate first batch, so a waveform appears without waiting for a later timer tick.
