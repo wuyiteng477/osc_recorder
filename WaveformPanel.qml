@@ -24,17 +24,15 @@ Rectangle {
     readonly property int activeViewCount: Math.max(1, activeChannels.length)
     function formatNumber(value) { return Number(value).toFixed(1).replace(/\.0$/, "") }
     function formatTime(value) { return Math.abs(value) < 1 ? formatNumber(value * 1000) + " ms" : formatNumber(value) + " s" }
-    function pointBudget() { const base = Math.max(256, Math.min(2048, Math.round(waveformCanvas.width * 1.2 / activeViewCount))); return activeChannels.length > 6 ? Math.min(base, 512) : base }
     function schedulePaint() { if (activePage && waveformCanvas.width > 0 && waveformCanvas.height > 0) waveformCanvas.requestPaint() }
-    function rebuildFrame() { if (displayMode === "update" && !reviewingHistory && waveformCanvas.width > 0) channelStore.buildUpdateFrames(latestSampleTime, visibleTimeSeconds, pointBudget(), activeChannels) }
-    onLatestSampleTimeChanged: { rebuildFrame(); schedulePaint() }
-    onHistoryOffsetSecondsChanged: { rebuildFrame(); schedulePaint() }
-    onTimePerDivMsChanged: { rebuildFrame(); schedulePaint() }
-    onDisplayModeChanged: { rebuildFrame(); schedulePaint() }
+    onLatestSampleTimeChanged: schedulePaint()
+    onHistoryOffsetSecondsChanged: schedulePaint()
+    onTimePerDivMsChanged: schedulePaint()
+    onDisplayModeChanged: schedulePaint()
     onGridVisibleChanged: schedulePaint()
     onSelectedChannelIndexChanged: schedulePaint()
-    onActivePageChanged: { if (activePage) { rebuildFrame(); schedulePaint() } }
-    Connections { target: root.channelStore; function onSampleRevisionChanged() { root.rebuildFrame(); root.schedulePaint() } function onFrameRevisionChanged() { root.schedulePaint() } function onRevisionChanged() { root.rebuildFrame(); root.schedulePaint() } }
+    onActivePageChanged: { if (activePage) schedulePaint() }
+    Connections { target: root.channelStore; function onSampleRevisionChanged() { root.schedulePaint() } function onFrameRevisionChanged() { root.schedulePaint() } function onRevisionChanged() { root.schedulePaint() } }
     component ActionButton: Button { id: button; property color fillColor: "#223542"; implicitHeight: 30; contentItem: Text { text: button.text; color: button.enabled ? "#d9e4ec" : "#71818d"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } background: Rectangle { radius: 4; color: button.enabled ? button.fillColor : "#29333a"; border.color: "#365467" } }
     ColumnLayout {
         anchors.fill: parent; anchors.margins: 14; spacing: 8
@@ -56,19 +54,33 @@ Rectangle {
                     if (!root.activeChannels.length) return
                     const viewHeight = height / root.activeChannels.length, divWidth = width / 10
                     const end = root.latestSampleTime - root.historyOffsetSeconds, start = end - root.visibleTimeSeconds
-                    const first = Math.max(0, Math.ceil((start - root.channelStore.historyStartTime) / root.samplePeriodSeconds))
-                    const last = Math.min(root.channelStore.historyCount - 1, Math.floor((end - root.channelStore.historyStartTime) / root.samplePeriodSeconds))
+                    const first = root.channelStore.firstLogicalIndexAtOrAfter(start)
+                    const last = root.channelStore.lastLogicalIndexAtOrBefore(end)
                     for (let viewIndex = 0; viewIndex < root.activeChannels.length; ++viewIndex) {
-                        const channelIndex = root.activeChannels[viewIndex], data = root.channelStore.channel(channelIndex), top = viewIndex * viewHeight, divisionHeight = viewHeight / 4, frame = root.channelStore.updateFrame(channelIndex)
+                        const channelIndex = root.activeChannels[viewIndex], data = root.channelStore.channel(channelIndex), top = viewIndex * viewHeight, divisionHeight = viewHeight / 4
                         context.fillStyle = viewIndex % 2 ? "#112833" : "#10242f"; context.fillRect(0, top, width, viewHeight)
                         if (root.gridVisible) { context.strokeStyle = "#1e4350"; context.lineWidth = 1; for (let x = 0; x <= 10; ++x) { context.beginPath(); context.moveTo(x * divWidth, top); context.lineTo(x * divWidth, top + viewHeight); context.stroke() } for (let y = 0; y <= 4; ++y) { context.beginPath(); context.moveTo(0, top + y * divisionHeight); context.lineTo(width, top + y * divisionHeight); context.stroke() } }
                         context.strokeStyle = "#4a8290"; context.setLineDash([3, 3]); context.beginPath(); context.moveTo(0, top + viewHeight / 2); context.lineTo(width, top + viewHeight / 2); context.stroke(); context.setLineDash([])
-                        context.strokeStyle = data.color; context.lineWidth = 1.6; context.beginPath(); let drew = false
-                        function point(value, x) { const y = top + viewHeight / 2 - (value + data.verticalOffsetV) * (divisionHeight / data.voltsPerDiv); if (!drew) { context.moveTo(x, y); drew = true } else context.lineTo(x, y) }
-                        if (!root.usesHistory) { for (let p = 0; p < frame.length; ++p) point(frame[p], frame.length > 1 ? p / (frame.length - 1) * width : 0) }
-                        else { const step = Math.max(1, Math.ceil(Math.max(0, last - first + 1) / root.pointBudget())); for (let logical = first; logical <= last; logical += step) { const bufferIndex = (root.channelStore.historyStartIndex + logical) % root.channelStore.historyCapacity, value = root.channelStore.historyValue(channelIndex, bufferIndex); if (value !== undefined) point(value, (root.channelStore.historyTimes[bufferIndex] - start) / root.visibleTimeSeconds * width) } }
+                        context.strokeStyle = data.color; context.lineWidth = 1.35; context.beginPath(); let drew = false
+                        function yFor(value) { return top + viewHeight / 2 - (value + data.verticalOffsetV) * (divisionHeight / data.voltsPerDiv) }
+                        function point(value, x) { const y = yFor(value); if (!drew) { context.moveTo(x, y); drew = true } else context.lineTo(x, y) }
+                        const sampleCount = Math.max(0, last - first + 1); let envelopeMinimums = undefined, envelopeMaximums = undefined, envelopeColumns = 0
+                        if (sampleCount <= Math.max(1, Math.floor(width))) {
+                            // Preserve every acquired point when there are fewer samples than pixels.
+                            for (let logical = first; logical <= last; ++logical) { const buffer = (root.channelStore.historyStartIndex + logical) % root.channelStore.historyCapacity, value = root.channelStore.historyValue(channelIndex, buffer); if (value !== undefined) point(value, (root.channelStore.historyTimes[buffer] - start) / root.visibleTimeSeconds * width) }
+                        } else {
+                            // Do not use a fixed stride: it aliases high-frequency channels.  Keep the
+                            // min/max envelope for each pixel column, with X derived from sample time.
+                            const columns = Math.max(1, Math.floor(width)), minimums = new Array(columns), maximums = new Array(columns)
+                            for (let logical = first; logical <= last; ++logical) { const buffer = (root.channelStore.historyStartIndex + logical) % root.channelStore.historyCapacity, value = root.channelStore.historyValue(channelIndex, buffer); if (value === undefined) continue; const x = (root.channelStore.historyTimes[buffer] - start) / root.visibleTimeSeconds * width, column = Math.max(0, Math.min(columns - 1, Math.floor(x))); if (minimums[column] === undefined || value < minimums[column]) minimums[column] = value; if (maximums[column] === undefined || value > maximums[column]) maximums[column] = value }
+                            // The connected centre trace keeps the waveform visually continuous;
+                            // the min/max stroke below preserves high-frequency extrema.
+                            for (let column = 0; column < columns; ++column) if (minimums[column] !== undefined) { const x = (column + .5) / columns * width; point((minimums[column] + maximums[column]) / 2, x) }
+                            envelopeMinimums = minimums; envelopeMaximums = maximums; envelopeColumns = columns
+                        }
                         if (drew) context.stroke()
-                        const current = frame.length ? frame[frame.length - 1] : 0; context.fillStyle = data.color; context.font = "12px sans-serif"; context.fillText(data.name + "  " + root.formatNumber(current) + " V  " + root.formatNumber(data.voltsPerDiv) + " V/div", 8, top + 15)
+                        if (envelopeColumns > 0) { context.globalAlpha = .55; context.beginPath(); for (let column = 0; column < envelopeColumns; ++column) if (envelopeMinimums[column] !== undefined) { const x = (column + .5) / envelopeColumns * width; context.moveTo(x, yFor(envelopeMinimums[column])); context.lineTo(x, yFor(envelopeMaximums[column])) } context.stroke(); context.globalAlpha = 1 }
+                        const latestBuffer = root.channelStore.historyCount ? (root.channelStore.historyStartIndex + root.channelStore.historyCount - 1) % root.channelStore.historyCapacity : 0, current = root.channelStore.historyValue(channelIndex, latestBuffer) || 0; context.fillStyle = data.color; context.font = "12px sans-serif"; context.fillText(data.name + "  " + root.formatNumber(current) + " V  " + root.formatNumber(data.voltsPerDiv) + " V/div", 8, top + 15)
                         context.strokeStyle = "#365467"; context.beginPath(); context.moveTo(0, top + viewHeight); context.lineTo(width, top + viewHeight); context.stroke()
                     }
                 }

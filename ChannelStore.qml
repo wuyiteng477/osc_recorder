@@ -40,11 +40,34 @@ QtObject {
     function channel(index) { return channelModel.get(index) }
     function activeViewChannels() {
         const channels = []
-        for (let index = 0; index < channelModel.count && channels.length < 8; ++index) if (channel(index).enabled) channels.push(index)
+        // Display selection is independent from acquisition.  A visible but
+        // non-acquiring channel still owns an empty real-time grid/view.
+        for (let index = 0; index < channelModel.count && channels.length < maximumVisibleWaveforms; ++index)
+            if (channel(index).visible) channels.push(index)
         return channels
     }
     function selectChannel(index) { if (index < 0 || index >= channelModel.count || index === selectedChannelIndex) return; channelModel.setProperty(selectedChannelIndex, "selected", false); channelModel.setProperty(index, "selected", true); selectedChannelIndex = index; ++revision }
     function historyValue(channelIndex, bufferIndex) { return channelBuffers[channelIndex] ? channelBuffers[channelIndex][bufferIndex] : undefined }
+    // History is a circular buffer, but its logical positions are always in
+    // monotonically increasing timestamp order.  Use timestamps rather than a
+    // current sample-rate assumption so a later rate change cannot remap old data.
+    function firstLogicalIndexAtOrAfter(time) {
+        let low = 0, high = historyCount
+        while (low < high) { const mid = Math.floor((low + high) / 2), buffer = (historyStartIndex + mid) % historyCapacity; if (historyTimes[buffer] < time) low = mid + 1; else high = mid }
+        return low
+    }
+    function lastLogicalIndexAtOrBefore(time) {
+        let low = 0, high = historyCount
+        while (low < high) { const mid = Math.floor((low + high) / 2), buffer = (historyStartIndex + mid) % historyCapacity; if (historyTimes[buffer] <= time) low = mid + 1; else high = mid }
+        return low - 1
+    }
+    function zeroCrossingFrequency(channelIndex, endTime, durationSeconds) {
+        const first = firstLogicalIndexAtOrAfter(endTime - durationSeconds), last = lastLogicalIndexAtOrBefore(endTime)
+        if (last - first < 2) return 0
+        let risingCrossings = 0, previous = undefined, firstTime = 0, lastTime = 0, haveTime = false
+        for (let logical = first; logical <= last; ++logical) { const buffer = (historyStartIndex + logical) % historyCapacity, value = historyValue(channelIndex, buffer); if (value === undefined) continue; if (previous !== undefined && previous <= 0 && value > 0) ++risingCrossings; if (!haveTime) { firstTime = historyTimes[buffer]; haveTime = true } lastTime = historyTimes[buffer]; previous = value }
+        return lastTime > firstTime ? risingCrossings / (lastTime - firstTime) : 0
+    }
     function updateFrame(channelIndex) { return updateFrames[channelIndex] || [] }
     function visibleCount() { let count = 0; for (let i = 0; i < channelModel.count; ++i) if (channel(i).visible) ++count; return count }
     function enabledCount() { let count = 0; for (let i = 0; i < channelModel.count; ++i) if (channel(i).enabled) ++count; return count }

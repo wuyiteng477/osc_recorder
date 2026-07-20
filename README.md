@@ -13,6 +13,14 @@
 
 ---
 
+## Acquisition configuration
+
+The acquisition settings page immediately applies sample rate, continuous/burst mode, eight-board bulk selection, and CH1-CH64 acquisition-channel changes while stopped. `Main.qml` retains the applied configuration shared by simulation, waveform, system status, and top status. Sample rate changes the batch size of the sole 20 ms acquisition Timer; burst mode writes a 100 ms batch every fifth tick. Acquisition can use all 64 channels while display remains independently capped at eight waveforms. Configuration changes, start, stop, and validation failures are logged.
+
+## Waveform timebase and anti-aliasing
+
+Waveform rendering reads the fixed-capacity history buffer using each sample's timestamp, not a current sample-rate-derived index or a display-frame-generated signal. Changing ms/div only changes the visible time window; it does not reset time, phase, history, or the signal generator. When the visible sample count fits the Canvas width, every raw point is drawn. Larger windows use a min/max envelope per pixel column, preventing the fixed-stride aliasing that previously made high-frequency channels appear as false low-frequency or beat signals. Changing timebase records a fixed 100 ms zero-crossing frequency check for enabled CH1-CH8 in the runtime log.
+
 ## Real-time waveform revision (2026-07-20)
 
 This revision is limited to the real-time waveform page and four-channel simulated acquisition.
