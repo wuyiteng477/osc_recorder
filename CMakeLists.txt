@@ -22,6 +22,7 @@ qt_add_qml_module(apposc_recorder
     URI osc_recorder
     QML_FILES
         Main.qml
+        ChannelStore.qml
         NavigationPanel.qml
         WaveformPanel.qml
         ParameterPanel.qml

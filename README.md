@@ -13,6 +13,43 @@
 
 ---
 
+## Real-time waveform revision (2026-07-20)
+
+This revision is limited to the real-time waveform page and four-channel simulated acquisition.
+
+### Follow-up fixes
+
+Update mode now calls `Canvas.requestPaint()` directly after rebuilding a frame; it no longer relies on a 33 ms deduplication timer. Simulation enters the running state before its first sample batch is written, so the state transition, sample revision, frame revision, and first Canvas request form one reliable sequence.
+
+Update-frame arrays are kept outside `ListModel` roles in `ChannelStore.qml`. Canvas now reads the store-owned frame directly, avoiding ambiguous array-role propagation during a repaint.
+
+When a channel is disabled, `ChannelStore` preserves its most recent update frame instead of regenerating it. Update-mode Canvas rendering uses that retained frame, so a visible disabled channel freezes immediately; enabling it resumes fresh sample and frame generation.
+
+The parameter panel now uses one normal current-channel dropdown. It changes the channel targeted by the vertical and history controls only.
+
+Channel visibility and acquisition enablement are now managed only on the channel-settings page. The real-time parameter panel contains a normal current-channel selector for vertical and history controls. Its waveform legend strip scrolls horizontally by mouse drag when the visible-channel list exceeds the available width.
+
+### 64-channel (8 boards × 8 channels) simulation
+
+`ChannelStore.qml` now initializes one `ListModel` containing CH1–CH64. Each record includes `boardIndex` (0–7), `channelIndex` (0–7), enabled/visible/selected state, name, color, volts/division, offset, simulation parameters, and room for a future PCIe/Xillybus source adapter. CH1–CH4 are enabled and visible by default; CH5–CH64 start disabled and hidden to bound normal CPU and Canvas load.
+
+There is still exactly one 20 ms acquisition timer in `Main.qml`, one shared timestamp ring, and one Canvas. The store writes samples in a batch for enabled channels, while update-mode display frames are built only for visible and enabled channels. Canvas limits its draw-point budget to 1024–4096 points per visible waveform; history uses a fixed 100,000-sample ring per possible channel, so retained data has a hard upper bound and never grows without limit over run time.
+
+For verification, start simulation with the default four channels, then use the channel settings page to enable/show channels from several boards. Confirm the legend strip can be dragged horizontally, hidden channels do not receive display frames, and repeated start/stop does not create additional timers. The QML/C++ design uses only Qt Quick and standard QML/JavaScript facilities, with no Windows API or platform-specific path assumptions; it remains compatible with the Qt 6.8+ / C++20 project configuration and Linux ARM64 targets.
+
+- `Main.qml` owns the single `simulationRunning` state and the single 20 ms shared acquisition timer.
+- `ChannelStore.qml` owns fixed-capacity per-channel history buffers; `sampleRevision` advances after each batch and `frameRevision` after frame generation.
+- `WaveformPanel.qml` observes those revisions and requests a coalesced Canvas repaint. Starting simulation inserts an immediate first batch, so a waveform appears without waiting for a later timer tick.
+- CH1–CH4 controls change only `visible`; a newly shown channel becomes selected. Legends are created from the visible model entries and only select channels.
+
+| State | Meaning |
+|---|---|
+| `enabled` | Generates new simulated samples; retained history is preserved. |
+| `visible` | Draws the channel only; it is independent of `enabled`. |
+| `selectedChannelIndex` | Selects the channel edited by the parameter panel. |
+
+The page keeps one shared time axis, one Canvas, fixed-capacity history, update/scroll modes, and no per-channel timers. Hardware, PCIe, recording, FFT, and trigger functionality remain out of scope.
+
 ## 1. 文档说明
 
 本文记录 Qt 6 / Qt Quick 第一阶段界面原型的开发内容。文档与 `SoftwarePlaning.md` 一样，采用“目标、范围、约束、结果”的形式组织；它描述已完成的界面工作，不替代后续硬件、采集和录制设计。
@@ -281,3 +318,25 @@ Canvas 不再从逻辑索引 0 扫描整个环形缓冲。它根据 `historyStar
 可见样本超过预算时，绘制代码按时间桶保留每桶的首点、最小值、最大值和末点，并按时间顺序输出。这是仅用于显示的 min/max 降采样，不会修改历史样本；短脉冲和峰值不会因简单隔点抽样而被轻易遗漏。实时 Canvas 绘制还通过 33 ms 单次定时器限至约 30 FPS，非实时页面不持续请求重绘。
 
 若历史窗口真实样本不足 20 点，界面会保留已有点并提示“当前历史采样点较少”；不会伪造或外推数据。更新模式的完整高分辨率帧不受此提示影响。
+
+---
+
+## 14. 四通道模拟原型
+
+本轮新增 `ChannelStore.qml` 作为唯一通道状态源，使用数据驱动的 `ListModel` 管理 CH1–CH4。每个通道保存板卡/板内编号、名称、启用与可见状态、颜色、量程、垂直偏移、频率、幅值、相位及独立历史和更新帧。此模型仅创建四个模拟通道，但可按同一结构扩展。
+
+一个统一 Timer 向所有已启用通道写入共享时间轴上的样本；可见性只影响绘制，不影响后台历史积累。清除历史会清除全部四个通道；更新、滚动和历史回看均使用相同的全局时间窗口。
+
+实时页使用单一 Canvas 循环绘制所有 enabled 且 visible 的通道，每条曲线使用各自颜色、量程和垂直偏移。图例显示可见通道的名称与量程，并可切换当前操作通道。右侧参数区的通道状态、可见性、量程和垂直偏移仅作用于当前选择；时基、显示模式、栅格和水平位置保持全局共享。
+
+通道设置页提供 CH1–CH4 的名称、启用、波形显示和预设颜色控制，修改会即时同步至实时页。启用表示是否继续采集；显示表示是否绘制，二者保持独立。
+
+---
+
+## 15. 多通道显示选择与模拟启动修复
+
+本轮明确修复了模拟启动状态链路：`Main.qml` 持有唯一的 `simulationRunning`，统一 Timer 仅绑定该状态；每批四通道样本写入后 `ChannelStore.qml` 递增 `sampleRevision`，更新帧生成后递增 `frameRevision`。`WaveformPanel.qml` 监听这些可观察版本号并通过 33 ms 合并定时器请求 Canvas 重绘，避免依赖数组内部元素修改的隐式通知。
+
+`enabled` 决定某通道是否继续产生新模拟样本；`visible` 决定其是否绘制；`selectedChannelIndex` 仅决定右侧参数编辑对象。右侧顶部的 CH1–CH4 按钮专门切换 `visible`：显示一个隐藏通道时会同时选中它，隐藏当前通道时会优先切换到其余可见通道。顶部图例完全根据可见通道模型生成；点击图例只切换当前编辑通道，不隐藏波形。已停用但仍可见的通道会以降低透明度显示保留历史。
+
+默认仅显示 CH1。无可见通道时，波形区提示“请选择要显示的通道”；有可见通道但尚无样本时提示“等待模拟采集数据”。实时工作区维持深色背景、动态通道图例、状态栏、单 Canvas 四通道绘制与底部操作按钮的一致视觉层次。

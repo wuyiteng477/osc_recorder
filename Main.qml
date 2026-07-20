@@ -1,210 +1,80 @@
 pragma ComponentBehavior: Bound
-
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 ApplicationWindow {
     id: window
-    width: 1280; height: 760
-    minimumWidth: 980; minimumHeight: 620
-    visible: true
-    title: qsTr("工业多通道示波记录软件")
-    color: "#111821"
-
+    width: 1280; height: 800; minimumWidth: 980; minimumHeight: 620; visible: true
+    title: qsTr("\u5de5\u4e1a\u591a\u901a\u9053\u793a\u6ce2\u8bb0\u5f55\u8f6f\u4ef6")
+    color: "#101820"
     property string currentPage: "realtime"
     property bool simulationRunning: false
-    property bool channelEnabled: true
+    property int selectedChannelIndex: 0
     property string displayMode: "update"
     property bool gridVisible: true
-    property real voltsPerDiv: 1.0
     property real timePerDivMs: 1.0
-    property real verticalOffsetV: 0.0
-    property real signalFrequencyHz: 500.0
-    property real signalAmplitudeV: 1.0
-    property int simulationSampleRate: 5000
-    property int historyCapacity: 100000
-    property var historyTimes: []
-    property var historyValues: []
-    property int historyStartIndex: 0
-    property int historyCount: 0
-    property real sampleTimeSeconds: 0.0
-    property real latestSampleTime: 0.0
-    property int historyRevision: 0
+    property real historyOffsetSeconds: 0
     property bool followLatest: true
-    property real historyOffsetSeconds: 0.0
-    property var updateFrameSamples: []
-    property int updateFrameRevision: 0
-    readonly property bool hasSimulationData: historyCount > 0
-    readonly property real historyStartTime: historyCount > 0 ? historyTimes[historyStartIndex] : 0.0
+    property real sampleTimeSeconds: 0
+    property real latestSampleTime: 0
+    property int simulationSampleRate: 5000
     readonly property real visibleTimeSeconds: timePerDivMs * 10 / 1000
     readonly property real horizontalStepSeconds: timePerDivMs / 1000
-    readonly property real historyEpsilon: 0.000000001
-    readonly property color panelColor: "#15212c"
-    readonly property color borderColor: "#314252"
-    readonly property color textColor: "#d9e4ec"
-    readonly property color mutedTextColor: "#8fa3b4"
-    readonly property color accentColor: "#19b4a5"
+    readonly property var selectedChannel: channelStore.channel(selectedChannelIndex)
+    readonly property bool hasSimulationData: channelStore.hasData
+    readonly property real historyStartTime: channelStore.historyStartTime
+    ChannelStore { id: channelStore }
 
     function formatNumber(value) { return Number(value).toFixed(1).replace(/\.0$/, "") }
-    function formatDuration(seconds) {
-        const magnitude = Math.abs(seconds)
-        return magnitude < 1 ? formatNumber(seconds * 1000) + " ms" : formatNumber(seconds) + " s"
-    }
-    function timestamp() {
-        const now = new Date()
-        return [now.getHours(), now.getMinutes(), now.getSeconds()].map(v => String(v).padStart(2, "0")).join(":")
-    }
-    function appendLog(message, level) {
-        logModel.append({ "message": "[" + timestamp() + "] [" + (level || qsTr("信息")) + "] " + message })
-        if (logModel.count > 100) logModel.remove(0)
-        logView.positionViewAtEnd()
-    }
-    function pageTitle(page) {
-        const titles = { realtime: qsTr("实时波形"), channels: qsTr("通道设置"), acquisition: qsTr("采集设置"), recording: qsTr("数据录制"), system: qsTr("系统状态") }
-        return titles[page] || titles.realtime
-    }
-    function changePage(page) { if (currentPage !== page) { currentPage = page; appendLog(qsTr("已切换到") + pageTitle(page) + qsTr("页面")) } }
-    function initializeHistory() { if (historyTimes.length !== historyCapacity) { historyTimes = new Array(historyCapacity); historyValues = new Array(historyCapacity) } }
-    function generateValue(time) {
-        const carrier = Math.sin(2 * Math.PI * signalFrequencyHz * time)
-        const harmonic = 0.08 * Math.sin(2 * Math.PI * signalFrequencyHz * 3 * time + 0.4)
-        const amplitude = 1.0 + 0.12 * Math.sin(2 * Math.PI * 0.09 * time + 0.7)
-        const baseline = 0.07 * Math.sin(2 * Math.PI * 0.045 * time + 0.2)
-        const noise = 0.012 * Math.sin(2 * Math.PI * 217.7 * time) + 0.006 * Math.sin(2 * Math.PI * 509.3 * time + 0.3)
-        const eventPhase = time % 4.7
-        const event = eventPhase < 0.22 ? -0.28 * Math.sin(Math.PI * eventPhase / 0.22) : 0
-        return signalAmplitudeV * (amplitude * (carrier + harmonic) + baseline + noise + event)
-    }
-    function generateUpdateFrame(visibleSeconds, pointCount) {
-        const frame = new Array(pointCount)
-        const actualStart = latestSampleTime - visibleSeconds
-        for (let i = 0; i < pointCount; ++i) {
-            const relativeTime = pointCount > 1 ? i / (pointCount - 1) * visibleSeconds : 0
-            const actualTime = actualStart + relativeTime
-            const carrier = Math.sin(2 * Math.PI * signalFrequencyHz * relativeTime)
-            const harmonic = 0.08 * Math.sin(2 * Math.PI * signalFrequencyHz * 3 * relativeTime + 0.4)
-            const amplitude = 1.0 + 0.12 * Math.sin(2 * Math.PI * 0.09 * actualTime + 0.7)
-            const baseline = 0.07 * Math.sin(2 * Math.PI * 0.045 * actualTime + 0.2)
-            const noise = 0.012 * Math.sin(2 * Math.PI * 217.7 * actualTime) + 0.006 * Math.sin(2 * Math.PI * 509.3 * actualTime + 0.3)
-            const eventPhase = ((actualTime % 4.7) + 4.7) % 4.7
-            const event = eventPhase < 0.22 ? -0.28 * Math.sin(Math.PI * eventPhase / 0.22) : 0
-            frame[i] = signalAmplitudeV * (amplitude * (carrier + harmonic) + baseline + noise + event)
-        }
-        updateFrameSamples = frame
-        updateFrameRevision += 1
-    }
-    function appendSimulationSamples(batchSize) {
-        initializeHistory()
-        const interval = 1.0 / simulationSampleRate
-        for (let i = 0; i < batchSize; ++i) {
-            const writeIndex = (historyStartIndex + historyCount) % historyCapacity
-            historyTimes[writeIndex] = sampleTimeSeconds
-            historyValues[writeIndex] = generateValue(sampleTimeSeconds)
-            if (historyCount < historyCapacity) historyCount += 1
-            else historyStartIndex = (historyStartIndex + 1) % historyCapacity
-            latestSampleTime = sampleTimeSeconds
-            sampleTimeSeconds += interval
-        }
-        if (followLatest) historyOffsetSeconds = 0
-        else historyOffsetSeconds = Math.min(historyOffsetSeconds + batchSize / simulationSampleRate, maximumHistoryOffset())
-        historyRevision += 1
-    }
+    function formatDuration(value) { return Math.abs(value) < 1 ? formatNumber(value * 1000) + " ms" : formatNumber(value) + " s" }
+    function appendLog(message, level) { const now = new Date(); const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()].map(value => String(value).padStart(2, "0")).join(":"); logModel.append({ message: "[" + stamp + "] [" + (level || "INFO") + "] " + message }); if (logModel.count > 100) logModel.remove(0); logView.positionViewAtEnd() }
     function maximumHistoryOffset() { return Math.max(0, latestSampleTime - historyStartTime - visibleTimeSeconds) }
-    function clampHistoryOffset() {
-        historyOffsetSeconds = Math.min(Math.max(0, historyOffsetSeconds), maximumHistoryOffset())
-        if (historyOffsetSeconds <= historyEpsilon) historyOffsetSeconds = 0
-        followLatest = historyOffsetSeconds === 0
-    }
-    function startSimulation() { if (!simulationRunning) { simulationRunning = true; appendLog(qsTr("模拟采集已启动")) } }
-    function stopSimulation() { if (simulationRunning) { simulationRunning = false; appendLog(qsTr("模拟采集已停止")) } }
-    function setVoltsPerDiv(value) { if (voltsPerDiv !== value) { voltsPerDiv = value; appendLog("CH1 " + qsTr("量程已设置为 ") + formatNumber(value) + " V/div") } }
-    function setTimePerDiv(value) {
-        const supportedValue = Math.min(200, value)
-        if (timePerDivMs === supportedValue) return
-        const oldVisibleTime = visibleTimeSeconds
-        const wasFollowing = followLatest && historyOffsetSeconds <= historyEpsilon
-        const oldViewCenter = latestSampleTime - historyOffsetSeconds - oldVisibleTime / 2
-        timePerDivMs = supportedValue
-        if (wasFollowing) { historyOffsetSeconds = 0; followLatest = true }
-        else {
-            const newViewRight = oldViewCenter + visibleTimeSeconds / 2
-            historyOffsetSeconds = latestSampleTime - newViewRight
-            clampHistoryOffset()
-        }
-        appendLog(value > 200 ? qsTr("当前时基已调整为支持范围上限 200 ms/div") : qsTr("时基已设置为 ") + formatNumber(supportedValue) + " ms/div")
-    }
-    function setVerticalOffset(value) { const bounded = Math.max(-5, Math.min(5, value)); if (verticalOffsetV !== bounded) { verticalOffsetV = bounded; appendLog("CH1 " + qsTr("垂直偏移已设置为 ") + formatNumber(bounded) + " V") } }
-    function setChannelEnabled(enabled) { if (channelEnabled !== enabled) { channelEnabled = enabled; appendLog(enabled ? "CH1 " + qsTr("已开启") : "CH1 " + qsTr("已关闭")) } }
-    function changeDisplayMode(mode) { if (displayMode !== mode) { displayMode = mode; appendLog(mode === "roll" ? qsTr("已切换到滚动模式") : qsTr("已切换到更新模式")) } }
-    function setGridVisible(visible) { if (gridVisible !== visible) { gridVisible = visible; appendLog(visible ? qsTr("栅格显示已开启") : qsTr("栅格显示已关闭")) } }
-    function historyIndex(logicalIndex) { return (historyStartIndex + logicalIndex) % historyCapacity }
-    function verticalFit() {
-        if (!hasSimulationData) { appendLog(qsTr("当前没有可用于垂直适配的数据"), qsTr("提示")); return }
-        const endTime = latestSampleTime - historyOffsetSeconds
-        const startTime = endTime - visibleTimeSeconds
-        let minimum = Infinity, maximum = -Infinity
-        for (let logical = 0; logical < historyCount; ++logical) {
-            const index = historyIndex(logical), time = historyTimes[index]
-            if (time >= startTime && time <= endTime) { const value = historyValues[index]; minimum = Math.min(minimum, value); maximum = Math.max(maximum, value) }
-        }
-        if (!isFinite(minimum) || !isFinite(maximum)) { appendLog(qsTr("当前没有可用于垂直适配的数据"), qsTr("提示")); return }
-        const peakToPeak = Math.max(0.001, maximum - minimum)
-        const ranges = [0.2, 0.5, 1.0, 2.0, 5.0]
-        let selected = ranges[ranges.length - 1]
-        for (let i = 0; i < ranges.length; ++i) if (peakToPeak <= ranges[i] * 8 * 0.8) { selected = ranges[i]; break }
-        voltsPerDiv = selected
-        verticalOffsetV = Math.max(-5, Math.min(5, -(maximum + minimum) / 2))
-        appendLog(qsTr("已执行垂直适配：量程 ") + formatNumber(voltsPerDiv) + " V/div，" + qsTr("偏移 ") + formatNumber(verticalOffsetV) + " V")
-    }
-    function resetPositions() {
-        if (verticalOffsetV === 0 && followLatest) return
-        verticalOffsetV = 0; historyOffsetSeconds = 0; followLatest = true
-        appendLog(qsTr("波形水平和垂直位置已复位"))
-    }
-    function moveHistoryLeft() {
-        if (!hasSimulationData) return
-        const oldOffset = historyOffsetSeconds
-        historyOffsetSeconds = Math.min(maximumHistoryOffset(), historyOffsetSeconds + horizontalStepSeconds)
-        clampHistoryOffset()
-        if (historyOffsetSeconds !== oldOffset) appendLog(qsTr("水平位置已移至距最新 ") + formatDuration(historyOffsetSeconds))
-    }
-    function moveHistoryRight() {
-        if (!hasSimulationData || historyOffsetSeconds <= historyEpsilon) return
-        historyOffsetSeconds = Math.max(0, historyOffsetSeconds - horizontalStepSeconds)
-        clampHistoryOffset()
-        appendLog(followLatest ? qsTr("水平位置已归零，已回到最新数据") : qsTr("水平位置已移至距最新 ") + formatDuration(historyOffsetSeconds))
-    }
-    function clearHistory() { historyStartIndex = 0; historyCount = 0; historyOffsetSeconds = 0; followLatest = true; historyRevision += 1; appendLog("CH1 " + qsTr("模拟历史已清除")) }
+    function clampOffset() { historyOffsetSeconds = Math.max(0, Math.min(historyOffsetSeconds, maximumHistoryOffset())); if (historyOffsetSeconds < 1e-9) historyOffsetSeconds = 0; followLatest = historyOffsetSeconds === 0 }
+    function appendSimulationSamples(count) { const interval = 1 / simulationSampleRate; channelStore.appendSamples(sampleTimeSeconds, interval, count); latestSampleTime = sampleTimeSeconds + (count - 1) * interval; sampleTimeSeconds += count * interval; if (followLatest) historyOffsetSeconds = 0; else historyOffsetSeconds = Math.min(maximumHistoryOffset(), historyOffsetSeconds + count * interval) }
+    function setSelectedChannel(index) { if (index !== selectedChannelIndex) { selectedChannelIndex = index; channelStore.selectChannel(index); appendLog(channelStore.channel(index).name + " selected") } }
+    function setChannelEnabled(index, enabled) { const data = channelStore.channel(index); if (channelStore.setRole(index, "enabled", enabled)) appendLog(data.name + (enabled ? " enabled" : " disabled")) }
+    function setChannelVisible(index, visible) { const data = channelStore.channel(index); if (channelStore.setRole(index, "visible", visible)) appendLog(data.name + (visible ? " shown" : " hidden")) }
+    function toggleChannelVisible(index) { const visible = channelStore.channel(index).visible; setChannelVisible(index, !visible); if (!visible) setSelectedChannel(index); else if (selectedChannelIndex === index) { for (let i = 0; i < channelStore.channelModel.count; ++i) if (channelStore.channel(i).visible) { setSelectedChannel(i); break } } }
+    function setChannelName(index, name) { const clean = name.trim(); if (clean.length && channelStore.setRole(index, "name", clean)) appendLog("CH" + channelStore.channel(index).channelId + " renamed to " + clean) }
+    function setChannelColor(index, color) { if (channelStore.setRole(index, "color", color)) appendLog(channelStore.channel(index).name + " color changed") }
+    function setVoltsPerDiv(value) { const data = selectedChannel; if (channelStore.setRole(selectedChannelIndex, "voltsPerDiv", value)) appendLog(data.name + " range " + formatNumber(value) + " V/div") }
+    function setVerticalOffset(value) { const data = selectedChannel, bounded = Math.max(-5, Math.min(5, value)); if (channelStore.setRole(selectedChannelIndex, "verticalOffsetV", bounded)) appendLog(data.name + " vertical offset " + formatNumber(bounded) + " V") }
+    function setTimePerDiv(value) { if (timePerDivMs === value) return; const oldVisible = visibleTimeSeconds, center = latestSampleTime - historyOffsetSeconds - oldVisible / 2, wasFollowing = followLatest; timePerDivMs = value; if (wasFollowing) historyOffsetSeconds = 0; else { historyOffsetSeconds = latestSampleTime - (center + visibleTimeSeconds / 2); clampOffset() } appendLog("Timebase " + formatNumber(value) + " ms/div") }
+    function moveHistoryLeft() { const before = historyOffsetSeconds; historyOffsetSeconds += horizontalStepSeconds; clampOffset(); if (before !== historyOffsetSeconds) appendLog("History moved to " + formatDuration(historyOffsetSeconds)) }
+    function moveHistoryRight() { if (historyOffsetSeconds <= 1e-9) return; historyOffsetSeconds -= horizontalStepSeconds; clampOffset(); appendLog(followLatest ? "Returned to latest samples" : "History moved to " + formatDuration(historyOffsetSeconds)) }
+    function changeDisplayMode(mode) { if (displayMode !== mode) { displayMode = mode; appendLog(mode === "roll" ? "Scroll mode enabled" : "Update mode enabled") } }
+    function setGridVisible(value) { if (gridVisible !== value) { gridVisible = value; appendLog(value ? "Grid shown" : "Grid hidden") } }
+    function startSimulation() { if (!simulationRunning) { simulationRunning = true; appendSimulationSamples(100); appendLog("64-channel simulation started (8 boards x 8 channels)") } }
+    function stopSimulation() { if (simulationRunning) { simulationRunning = false; appendLog("64-channel simulation stopped") } }
+    function clearHistory() { channelStore.clearHistory(); historyOffsetSeconds = 0; followLatest = true; appendLog("64-channel history cleared") }
+    function verticalFit() { const data = selectedChannel, end = latestSampleTime - historyOffsetSeconds, start = end - visibleTimeSeconds; let min = Infinity, max = -Infinity; const first = Math.max(0, Math.ceil((start - historyStartTime) * simulationSampleRate)), last = Math.min(channelStore.historyCount - 1, Math.floor((end - historyStartTime) * simulationSampleRate)); for (let i = first; i <= last; ++i) { const value = channelStore.historyValue(selectedChannelIndex, (channelStore.historyStartIndex + i) % channelStore.historyCapacity); if (value !== undefined) { min = Math.min(min, value); max = Math.max(max, value) } } if (!isFinite(min)) { appendLog(data.name + " has no samples for vertical fit", "NOTICE"); return } const p2p = Math.max(.001, max - min), ranges = [.2, .5, 1, 2, 5]; let range = 5; for (let i = 0; i < ranges.length; ++i) if (p2p <= ranges[i] * 6.4) { range = ranges[i]; break } channelStore.setRole(selectedChannelIndex, "voltsPerDiv", range); channelStore.setRole(selectedChannelIndex, "verticalOffsetV", Math.max(-5, Math.min(5, -(max + min) / 2))); appendLog(data.name + " vertical fit applied") }
+    function resetPositions() { const data = selectedChannel; const changed = data.verticalOffsetV !== data.defaultOffsetV || !followLatest; channelStore.setRole(selectedChannelIndex, "verticalOffsetV", data.defaultOffsetV); historyOffsetSeconds = 0; followLatest = true; if (changed) appendLog(data.name + " position reset") }
 
     ListModel { id: logModel }
-    Component.onCompleted: {
-        if (timePerDivMs > 200) { timePerDivMs = 200; appendLog(qsTr("当前时基已调整为支持范围上限 200 ms/div")) }
-        appendLog(qsTr("软件启动完成")); appendLog(qsTr("当前运行在模拟模式")); appendLog(qsTr("尚未连接采集设备"), qsTr("提示"))
-    }
     Timer { interval: 20; running: window.simulationRunning; repeat: true; onTriggered: window.appendSimulationSamples(100) }
-    component StatusItem: RowLayout { required property string label; required property string value; property color valueColor: window.textColor; spacing: 6; Label { text: parent.label + ":"; color: window.mutedTextColor; font.pixelSize: 13 } Label { text: parent.value; color: parent.valueColor; font.pixelSize: 13; font.bold: true } }
+    Component.onCompleted: appendLog("Application ready in four-channel simulation mode")
 
     ColumnLayout {
         anchors.fill: parent; spacing: 0
-        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 54; color: window.panelColor; border.color: window.borderColor
-            RowLayout { anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 22; spacing: 26
-                Label { text: window.title; color: "#f0f6f8"; font.pixelSize: 18; font.bold: true; Layout.rightMargin: 16 }
-                StatusItem { label: qsTr("设备"); value: qsTr("未连接"); valueColor: "#e8a94b" } StatusItem { label: qsTr("采集"); value: window.simulationRunning ? qsTr("运行中") : qsTr("已停止"); valueColor: window.simulationRunning ? "#35d19b" : window.mutedTextColor } StatusItem { label: qsTr("录制"); value: qsTr("已停止") } StatusItem { label: qsTr("磁盘空间"); value: "--" } StatusItem { label: qsTr("告警"); value: "0"; valueColor: "#35d19b" } Item { Layout.fillWidth: true } Label { text: qsTr("模拟模式"); color: window.accentColor; font.pixelSize: 13; font.bold: true }
-            }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 54; color: "#15212c"; border.color: "#314252"
+            RowLayout { anchors.fill: parent; anchors.margins: 18; Label { text: window.title; color: "#f0f6f8"; font.pixelSize: 18; font.bold: true } Item { Layout.fillWidth: true } Label { text: window.simulationRunning ? qsTr("\u91c7\u96c6: \u8fd0\u884c\u4e2d") : qsTr("\u91c7\u96c6: \u5df2\u505c\u6b62"); color: window.simulationRunning ? "#35d19b" : "#8fa3b4"; font.bold: true } Label { text: qsTr("\u6a21\u62df\u6a21\u5f0f"); color: "#19b4a5"; font.bold: true } }
         }
         RowLayout { Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
-            NavigationPanel { Layout.preferredWidth: 176; Layout.fillHeight: true; currentPage: window.currentPage; onPageRequested: page => window.changePage(page) }
+            NavigationPanel { Layout.preferredWidth: 176; Layout.fillHeight: true; currentPage: window.currentPage; onPageRequested: page => { if (window.currentPage !== page) { window.currentPage = page; window.appendLog("Opened " + page + " page") } } }
             StackLayout { Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: ["realtime", "channels", "acquisition", "recording", "system"].indexOf(window.currentPage)
                 RowLayout { spacing: 0
-                    WaveformPanel { Layout.fillWidth: true; Layout.fillHeight: true; activePage: window.currentPage === "realtime"; simulationRunning: window.simulationRunning; hasSimulationData: window.hasSimulationData; channelEnabled: window.channelEnabled; displayMode: window.displayMode; gridVisible: window.gridVisible; voltsPerDiv: window.voltsPerDiv; timePerDivMs: window.timePerDivMs; verticalOffsetV: window.verticalOffsetV; historyTimes: window.historyTimes; historyValues: window.historyValues; historyStartIndex: window.historyStartIndex; historyCount: window.historyCount; historyCapacity: window.historyCapacity; samplePeriodSeconds: 1 / window.simulationSampleRate; latestSampleTime: window.latestSampleTime; historyOffsetSeconds: window.historyOffsetSeconds; historyRevision: window.historyRevision; updateFrameSamples: window.updateFrameSamples; updateFrameRevision: window.updateFrameRevision; onUpdateFrameRequested: (visibleSeconds, pointCount) => window.generateUpdateFrame(visibleSeconds, pointCount); onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
-                    ParameterPanel { Layout.preferredWidth: 250; Layout.fillHeight: true; channelEnabled: window.channelEnabled; voltsPerDiv: window.voltsPerDiv; timePerDivMs: window.timePerDivMs; horizontalStepSeconds: window.horizontalStepSeconds; verticalOffsetV: window.verticalOffsetV; displayMode: window.displayMode; gridVisible: window.gridVisible; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.historyOffsetSeconds; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); onChannelEnabledRequested: enabled => window.setChannelEnabled(enabled); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onGridVisibleRequested: visible => window.setGridVisible(visible); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetPositions() }
+                    WaveformPanel { Layout.fillWidth: true; Layout.fillHeight: true; activePage: window.currentPage === "realtime"; channelStore: channelStore; selectedChannelIndex: window.selectedChannelIndex; simulationRunning: window.simulationRunning; displayMode: window.displayMode; gridVisible: window.gridVisible; timePerDivMs: window.timePerDivMs; latestSampleTime: window.latestSampleTime; historyOffsetSeconds: window.historyOffsetSeconds; samplePeriodSeconds: 1 / window.simulationSampleRate; onSelectedChannelRequested: index => window.setSelectedChannel(index); onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
+                    ParameterPanel { Layout.preferredWidth: 270; Layout.fillHeight: true; channelStore: channelStore; selectedChannelIndex: window.selectedChannelIndex; timePerDivMs: window.timePerDivMs; horizontalStepSeconds: window.horizontalStepSeconds; displayMode: window.displayMode; gridVisible: window.gridVisible; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.historyOffsetSeconds; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); onSelectedChannelRequested: index => window.setSelectedChannel(index); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onGridVisibleRequested: value => window.setGridVisible(value); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetPositions() }
                 }
-                ChannelSettingsPage { } AcquisitionSettingsPage { } RecordingPage { } SystemStatusPage { simulationRunning: window.simulationRunning }
+                ChannelSettingsPage { channelStore: channelStore; onChannelNameRequested: (index, name) => window.setChannelName(index, name); onChannelEnabledRequested: (index, value) => window.setChannelEnabled(index, value); onChannelVisibleRequested: (index, value) => window.setChannelVisible(index, value); onChannelColorRequested: (index, color) => window.setChannelColor(index, color) }
+                AcquisitionSettingsPage { }
+                RecordingPage { }
+                SystemStatusPage { simulationRunning: window.simulationRunning }
             }
         }
-        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 118; color: "#121d27"; border.color: window.borderColor
-            ColumnLayout { anchors.fill: parent; anchors.margins: 10; spacing: 4; Label { text: qsTr("运行日志"); color: window.mutedTextColor; font.pixelSize: 12; font.bold: true } ListView { id: logView; Layout.fillWidth: true; Layout.fillHeight: true; model: logModel; clip: true; delegate: Label { required property string message; text: message; color: message.indexOf("[提示]") >= 0 ? "#e8a94b" : window.textColor; font.pixelSize: 13 } } }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 118; color: "#121d27"; border.color: "#314252"
+            ColumnLayout { anchors.fill: parent; anchors.margins: 10; Label { text: qsTr("\u8fd0\u884c\u65e5\u5fd7"); color: "#8fa3b4"; font.bold: true } ListView { id: logView; Layout.fillWidth: true; Layout.fillHeight: true; model: logModel; clip: true; delegate: Label { required property string message; text: message; color: "#d9e4ec"; font.pixelSize: 13 } } }
         }
     }
 }
