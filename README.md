@@ -45,6 +45,10 @@ All views share one Canvas, one time axis, one `ChannelStore`, and the same ring
 
 To verify: start on the CH1 single view, enable channels to produce 2–8 equal-height views, then disable middle channels and confirm the remaining views reflow without clearing history. Stop sampling and inspect retained curves/history. No additional per-channel timers, canvas instances, or acquisition buffers are created.
 
+The left navigation is a dedicated full-height column, spanning both the workspace and the log area. On the real-time page, channel parameters are likewise a single full-height right column; the central column contains the waveform workspace above the five-line event log, so no lower-right placeholder remains. Its bilingual `运行日志 / Event Log` heading contains a compact `中文 / English` selector: it changes the language of newly appended log messages only and does not affect acquisition, display mode, or navigation behavior. The log remains capped at 100 entries.
+
+Clearing history is also an explicit empty-frame transition in both waveform modes. In update mode, the generated display frame is invalidated while the history buffer is empty, preventing the pre-clear curve from being redrawn; fresh samples resume normal rendering on the next shared acquisition batch.
+
 - `Main.qml` owns the single `simulationRunning` state and the single 20 ms shared acquisition timer.
 - `ChannelStore.qml` owns fixed-capacity per-channel history buffers; `sampleRevision` advances after each batch and `frameRevision` after frame generation.
 - `WaveformPanel.qml` observes those revisions and requests a coalesced Canvas repaint. Starting simulation inserts an immediate first batch, so a waveform appears without waiting for a later timer tick.

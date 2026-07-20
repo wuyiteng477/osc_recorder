@@ -65,6 +65,15 @@ QtObject {
         ++sampleRevision; ++revision
     }
     function buildUpdateFrames(latestTime, visibleSeconds, pointCount, channelIndices) {
+        // Update mode normally synthesizes a display frame from the latest
+        // acquisition state.  A cleared history is an explicit empty state,
+        // however: do not immediately recreate a full-width synthetic curve
+        // while there are no newly acquired samples to display.
+        if (historyCount === 0) {
+            updateFrames = []
+            ++frameRevision
+            return
+        }
         const frames = updateFrames.slice(), actualStart = latestTime - visibleSeconds, limit = Math.min(channelIndices.length, maximumVisibleWaveforms)
         for (let item = 0; item < limit; ++item) { const index = channelIndices[item], data = channel(index); if (!data.enabled) continue; const frame = new Array(pointCount)
             for (let point = 0; point < pointCount; ++point) { const relative = pointCount > 1 ? point / (pointCount - 1) * visibleSeconds : 0; frame[point] = valueFor(data, actualStart + relative) }
