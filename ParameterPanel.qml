@@ -23,30 +23,222 @@ Rectangle {
     signal moveHistoryRightRequested()
     signal resetHistoryPositionRequested()
     readonly property var channel: channelStore.channel(selectedChannelIndex)
-    color: "#15212c"; border.color: "#314252"
+    color: "#15212c"
+    border.color: "#314252"
+
     function num(value) { return Number(value).toFixed(1).replace(/\.0$/, "") }
-    component Section: Label { color: "#8fa3b4"; font.pixelSize: 12; font.bold: true; Layout.topMargin: 5 }
-    component Btn: Button { id: button; implicitHeight: 32; contentItem: Text { text: button.text; color: button.enabled ? "#d9e4ec" : "#71818d"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } background: Rectangle { radius: 3; color: button.enabled ? "#223542" : "#29333a"; border.color: "#365467" } }
-    component Separator: Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#314252" }
+
+    // 各分区标题样式统一，方便后续增减设置项。
+    component Section: Label {
+        color: "#8fa3b4"
+        font.pixelSize: 12
+        font.bold: true
+        Layout.topMargin: 5
+    }
+
+    component Btn: Button {
+        id: button
+        implicitHeight: 32
+
+        contentItem: Text {
+            text: button.text
+            color: button.enabled ? "#d9e4ec" : "#71818d"
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+
+        background: Rectangle {
+            radius: 3
+            color: button.enabled ? "#223542" : "#29333a"
+            border.color: "#365467"
+        }
+    }
+
+    component Separator: Rectangle {
+        Layout.fillWidth: true
+        Layout.preferredHeight: 1
+        color: "#314252"
+    }
 
     ColumnLayout {
-        anchors.fill: parent; anchors.margins: 16; spacing: 7
-        Label { text: qsTr("\u901a\u9053\u53c2\u6570"); color: "#d9e4ec"; font.pixelSize: 16; font.bold: true }
+        anchors.fill: parent
+        anchors.margins: 16
+        spacing: 7
+
+        Label {
+            text: qsTr("\u901a\u9053\u53c2\u6570")
+            color: "#d9e4ec"
+            font.pixelSize: 16
+            font.bold: true
+        }
+
         Section { text: qsTr("\u5f53\u524d\u7f16\u8f91\u901a\u9053") }
-        ComboBox { id: channels; Layout.fillWidth: true; implicitHeight: 32; model: root.channelStore.channelModel; textRole: "name"; currentIndex: root.selectedChannelIndex; onActivated: root.selectedChannelRequested(currentIndex); contentItem: Text { leftPadding: 10; text: channels.currentText; color: root.channel.color; verticalAlignment: Text.AlignVCenter } background: Rectangle { color: "#223542"; radius: 3; border.color: root.channel.color } }
+
+        ComboBox {
+            id: channels
+            Layout.fillWidth: true
+            implicitHeight: 32
+            model: root.channelStore.channelModel
+            textRole: "name"
+            currentIndex: root.selectedChannelIndex
+
+            onActivated: root.selectedChannelRequested(currentIndex)
+
+            contentItem: Text {
+                leftPadding: 10
+                text: channels.currentText
+                color: root.channel.color
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                color: "#223542"
+                radius: 3
+                border.color: root.channel.color
+            }
+        }
+
         Separator { }
+
         Section { text: qsTr("\u5782\u76f4\u63a7\u5236") }
-        ComboBox { id: volts; Layout.fillWidth: true; implicitHeight: 32; model: [.2, .5, 1, 2, 5]; currentIndex: model.indexOf(root.channel.voltsPerDiv); onActivated: root.voltsPerDivRequested(Number(currentValue)); contentItem: Text { leftPadding: 10; text: root.num(volts.currentValue) + " V/div"; color: "#d9e4ec"; verticalAlignment: Text.AlignVCenter } background: Rectangle { color: "#223542"; radius: 3; border.color: "#365467" } }
-        Label { text: qsTr("\u5782\u76f4\u504f\u79fb  ") + root.num(root.channel.verticalOffsetV) + " V"; color: root.channel.color }
-        RowLayout { Layout.fillWidth: true; Btn { text: qsTr("\u4e0a\u79fb"); Layout.fillWidth: true; onClicked: root.verticalOffsetRequested(root.channel.verticalOffsetV + .2) } Btn { text: qsTr("\u4e0b\u79fb"); Layout.fillWidth: true; onClicked: root.verticalOffsetRequested(root.channel.verticalOffsetV - .2) } Btn { text: qsTr("\u5f52\u96f6"); Layout.fillWidth: true; onClicked: root.verticalOffsetRequested(root.channel.defaultOffsetV) } }
+
+        ComboBox {
+            id: volts
+            Layout.fillWidth: true
+            implicitHeight: 32
+            model: [.2, .5, 1, 2, 5]
+            currentIndex: model.indexOf(root.channel.voltsPerDiv)
+
+            onActivated: root.voltsPerDivRequested(Number(currentValue))
+
+            contentItem: Text {
+                leftPadding: 10
+                text: root.num(volts.currentValue) + " V/div"
+                color: "#d9e4ec"
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                color: "#223542"
+                radius: 3
+                border.color: "#365467"
+            }
+        }
+
+        Label {
+            text: qsTr("\u5782\u76f4\u504f\u79fb  ") + root.num(root.channel.verticalOffsetV) + " V"
+            color: root.channel.color
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            Btn {
+                text: qsTr("\u4e0a\u79fb")
+                Layout.fillWidth: true
+                onClicked: root.verticalOffsetRequested(root.channel.verticalOffsetV + .2)
+            }
+
+            Btn {
+                text: qsTr("\u4e0b\u79fb")
+                Layout.fillWidth: true
+                onClicked: root.verticalOffsetRequested(root.channel.verticalOffsetV - .2)
+            }
+
+            Btn {
+                text: qsTr("\u5f52\u96f6")
+                Layout.fillWidth: true
+                onClicked: root.verticalOffsetRequested(root.channel.defaultOffsetV)
+            }
+        }
+
         Separator { }
+
         Section { text: qsTr("\u6c34\u5e73\u63a7\u5236") }
-        ComboBox { id: times; Layout.fillWidth: true; implicitHeight: 32; model: [.1, .2, .5, 1, 2, 5, 10, 20, 50, 100, 200]; currentIndex: model.indexOf(root.timePerDivMs); onActivated: root.timePerDivRequested(Number(currentValue)); contentItem: Text { leftPadding: 10; text: root.num(times.currentValue) + " ms/div"; color: "#d9e4ec"; verticalAlignment: Text.AlignVCenter } background: Rectangle { color: "#223542"; radius: 3; border.color: "#365467" } }
-        Label { text: qsTr("\u5386\u53f2\u4f4d\u7f6e  ") + (root.historyOffsetSeconds < 1e-9 ? qsTr("\u6700\u65b0") : root.num(root.historyOffsetSeconds * 1000) + " ms"); color: "#8fa3b4" }
-        RowLayout { Layout.fillWidth: true; Btn { text: qsTr("\u5de6\u79fb"); Layout.fillWidth: true; enabled: root.hasSimulationData && root.historyOffsetSeconds < root.maximumHistoryOffsetSeconds - 1e-9; onClicked: root.moveHistoryLeftRequested() } Btn { text: qsTr("\u53f3\u79fb"); Layout.fillWidth: true; enabled: root.historyOffsetSeconds > 1e-9; onClicked: root.moveHistoryRightRequested() } Btn { text: qsTr("\u5f52\u96f6"); Layout.fillWidth: true; enabled: root.historyOffsetSeconds > 1e-9; onClicked: root.resetHistoryPositionRequested() } }
+
+        ComboBox {
+            id: times
+            Layout.fillWidth: true
+            implicitHeight: 32
+            model: [.1, .2, .5, 1, 2, 5, 10, 20, 50, 100, 200]
+            currentIndex: model.indexOf(root.timePerDivMs)
+
+            onActivated: root.timePerDivRequested(Number(currentValue))
+
+            contentItem: Text {
+                leftPadding: 10
+                text: root.num(times.currentValue) + " ms/div"
+                color: "#d9e4ec"
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                color: "#223542"
+                radius: 3
+                border.color: "#365467"
+            }
+        }
+
+        Label {
+            text: qsTr("\u5386\u53f2\u4f4d\u7f6e  ") + (root.historyOffsetSeconds < 1e-9 ? qsTr("\u6700\u65b0") : root.num(root.historyOffsetSeconds * 1000) + " ms")
+            color: "#8fa3b4"
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            Btn {
+                text: qsTr("\u5de6\u79fb")
+                Layout.fillWidth: true
+                enabled: root.hasSimulationData && root.historyOffsetSeconds < root.maximumHistoryOffsetSeconds - 1e-9
+                onClicked: root.moveHistoryLeftRequested()
+            }
+
+            Btn {
+                text: qsTr("\u53f3\u79fb")
+                Layout.fillWidth: true
+                enabled: root.historyOffsetSeconds > 1e-9
+                onClicked: root.moveHistoryRightRequested()
+            }
+
+            Btn {
+                text: qsTr("\u5f52\u96f6")
+                Layout.fillWidth: true
+                enabled: root.historyOffsetSeconds > 1e-9
+                onClicked: root.resetHistoryPositionRequested()
+            }
+        }
+
         Separator { }
+
         Section { text: qsTr("\u663e\u793a\u63a7\u5236") }
-        RowLayout { Layout.fillWidth: true; Btn { text: qsTr("\u66f4\u65b0"); Layout.fillWidth: true; enabled: root.displayMode !== "update"; onClicked: root.displayModeRequested("update") } Btn { text: qsTr("\u6eda\u52a8"); Layout.fillWidth: true; enabled: root.displayMode !== "roll"; onClicked: root.displayModeRequested("roll") } Btn { text: root.gridVisible ? qsTr("\u5173\u95ed\u6805\u683c") : qsTr("\u663e\u793a\u6805\u683c"); Layout.fillWidth: true; onClicked: root.gridVisibleRequested(!root.gridVisible) } }
-        Item { Layout.fillHeight: true }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            Btn {
+                text: qsTr("\u66f4\u65b0")
+                Layout.fillWidth: true
+                enabled: root.displayMode !== "update"
+                onClicked: root.displayModeRequested("update")
+            }
+
+            Btn {
+                text: qsTr("\u6eda\u52a8")
+                Layout.fillWidth: true
+                enabled: root.displayMode !== "roll"
+                onClicked: root.displayModeRequested("roll")
+            }
+
+            Btn {
+                text: root.gridVisible ? qsTr("\u5173\u95ed\u6805\u683c") : qsTr("\u663e\u793a\u6805\u683c")
+                Layout.fillWidth: true
+                onClicked: root.gridVisibleRequested(!root.gridVisible)
+            }
+        }
+
+        Item {
+            Layout.fillHeight: true
+        }
     }
 }
