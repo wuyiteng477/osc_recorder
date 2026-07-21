@@ -84,6 +84,24 @@ Rectangle {
     onConfigurationRevisionChanged: loadAppliedConfiguration()
     Component.onCompleted: loadAppliedConfiguration()
 
+    component SelectionCheckBox: CheckBox {
+        id: checkControl
+        hoverEnabled: true
+        indicator: Rectangle {
+            implicitWidth: 18
+            implicitHeight: 18
+            x: 0
+            y: (parent.height - height) / 2
+            radius: 2
+            color: !checkControl.enabled ? "#29333a" : checkControl.checked ? "#35a9a0" : checkControl.hovered ? "#193441" : "#14232e"
+            border.color: checkControl.down ? "#d9f6f2" : "#7292a4"
+            scale: checkControl.down ? .88 : 1
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on border.color { ColorAnimation { duration: 120 } }
+            Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutQuad } }
+        }
+    }
+
     ScrollView {
         anchors.fill: parent
         clip: true
@@ -221,7 +239,7 @@ Rectangle {
                         RowLayout {
                             Layout.fillWidth: true
 
-                            CheckBox {
+                            SelectionCheckBox {
                                 id: boardBox
                                 text: qsTr("\u677f\u5361 ") + (boardCard.index + 1) + qsTr("\uff08\u5168\u9009\uff09")
                                 checked: root.boardChannelCount(boardCard.index) === 8
@@ -237,15 +255,6 @@ Rectangle {
                                     verticalAlignment: Text.AlignVCenter
                                 }
 
-                                indicator: Rectangle {
-                                    implicitWidth: 18
-                                    implicitHeight: 18
-                                    x: 0
-                                    y: (parent.height - height) / 2
-                                    radius: 2
-                                    color: boardBox.checked ? "#35a9a0" : "#14232e"
-                                    border.color: "#7292a4"
-                                }
                             }
 
                             Item {
@@ -266,7 +275,7 @@ Rectangle {
                             Repeater {
                                 model: 8
 
-                                delegate: CheckBox {
+                                delegate: SelectionCheckBox {
                                     id: channelBox
                                     required property int index
                                     readonly property int channel: (boardCard.index * 8) + index
@@ -284,15 +293,6 @@ Rectangle {
                                         verticalAlignment: Text.AlignVCenter
                                     }
 
-                                    indicator: Rectangle {
-                                        implicitWidth: 16
-                                        implicitHeight: 16
-                                        x: 0
-                                        y: (parent.height - height) / 2
-                                        radius: 2
-                                        color: channelBox.checked ? "#35a9a0" : "#14232e"
-                                        border.color: "#7292a4"
-                                    }
                                 }
                             }
 

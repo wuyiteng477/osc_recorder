@@ -24,7 +24,7 @@ Rectangle {
         return titles[page] || page
     }
 
-    component NavigationButton: Button {
+    component NavigationButton: AppButton {
         id: button
         required property string page
         required property string title
@@ -32,18 +32,14 @@ Rectangle {
         implicitHeight: 42
         Layout.fillWidth: true
         leftPadding: 18
-        contentItem: Text {
-            text: button.text
-            color: root.currentPage === button.page ? "#ffffff" : "#8fa3b4"
-            font.pixelSize: 15
-            verticalAlignment: Text.AlignVCenter
-        }
-
-        background: Rectangle {
-            radius: 4
-            color: root.currentPage === button.page ? "#235d67" : "transparent"
-            border.color: root.currentPage === button.page ? "#2b8990" : "transparent"
-        }
+        selected: root.currentPage === button.page
+        fillColor: "transparent"
+        selectedFillColor: "#235d67"
+        borderColor: "transparent"
+        selectedBorderColor: "#2b8990"
+        textColor: "#8fa3b4"
+        selectedTextColor: "#ffffff"
+        textAlignment: Text.AlignLeft
 
         onClicked: root.pageRequested(button.page)
     }

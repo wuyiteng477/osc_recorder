@@ -28,6 +28,7 @@ qt_add_qml_module(apposc_recorder
   PlaybackBackend.h
     QML_FILES
         Main.qml
+        AppButton.qml
         ChannelStore.qml
         NavigationPanel.qml
         WaveformPanel.qml

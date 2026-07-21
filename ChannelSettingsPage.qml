@@ -21,24 +21,7 @@ Rectangle {
         expandedBoards = next
     }
 
-    component ButtonStyle: Button {
-        id: control
-        implicitHeight: 38
-
-        contentItem: Text {
-            text: control.text
-            color: control.enabled ? "#d9e4ec" : "#71818d"
-            font.pixelSize: 14
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-
-        background: Rectangle {
-            radius: 4
-            color: "#223542"
-            border.color: "#365467"
-        }
-    }
+    component ButtonStyle: AppButton { implicitHeight: 38 }
 
     component FieldStyle: TextField {
         color: "#d9e4ec"
@@ -93,25 +76,17 @@ Rectangle {
                     color: boardSection.expanded ? "#1b3441" : "#172a35"
                     border.color: "#3b7380"
 
-                    Button {
+                    AppButton {
                         id: boardButton
                         anchors.fill: parent
                         anchors.margins: 1
                         text: (boardSection.expanded ? "▼  " : "▶  ") + qsTr("\u677f\u5361 ") + (boardSection.boardIndex + 1) + "   CH" + (boardSection.boardIndex * 8 + 1) + "-CH" + (boardSection.boardIndex * 8 + 8)
 
-                        contentItem: Text {
-                            leftPadding: 14
-                            text: boardButton.text
-                            color: "#d9e4ec"
-                            font.pixelSize: 16
-                            font.bold: true
-                            verticalAlignment: Text.AlignVCenter
-                        }
-
-                        background: Rectangle {
-                            radius: 4
-                            color: "transparent"
-                        }
+                        leftPadding: 14
+                        textAlignment: Text.AlignLeft
+                        fillColor: "transparent"
+                        borderColor: "transparent"
+                        textColor: "#d9e4ec"
 
                         onClicked: root.toggleBoard(boardSection.boardIndex)
                     }

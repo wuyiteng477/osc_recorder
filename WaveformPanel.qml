@@ -48,24 +48,7 @@ Rectangle {
         function onRevisionChanged() { root.schedulePaint() }
     }
 
-    component ActionButton: Button {
-        id: button
-        property color fillColor: "#223542"
-        implicitHeight: 30
-
-        contentItem: Text {
-            text: button.text
-            color: button.enabled ? "#d9e4ec" : "#71818d"
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-
-        background: Rectangle {
-            radius: 4
-            color: button.enabled ? button.fillColor : "#29333a"
-            border.color: "#365467"
-        }
-    }
+    component ActionButton: AppButton { implicitHeight: 30 }
 
     ColumnLayout {
         anchors.fill: parent
@@ -111,27 +94,20 @@ Rectangle {
                 Repeater {
                     model: root.activeChannels
 
-                    delegate: Button {
+                    delegate: AppButton {
                         id: legend
                         required property int index
                         readonly property int channelIndex: root.activeChannels[index]
                         readonly property var info: root.channelStore.channel(channelIndex)
                         text: info.name + "  " + root.formatNumber(info.voltsPerDiv) + " V/div"
                         implicitHeight: 26
-
-                        contentItem: Text {
-                            text: legend.text
-                            color: legend.info.color
-                            font.pixelSize: 12
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-
-                        background: Rectangle {
-                            radius: 3
-                            color: "#172e39"
-                            border.color: root.selectedChannelIndex === legend.channelIndex ? legend.info.color : "#365467"
-                        }
+                        selected: root.selectedChannelIndex === legend.channelIndex
+                        fillColor: "#172e39"
+                        selectedFillColor: "#17313a"
+                        borderColor: "#365467"
+                        selectedBorderColor: legend.info.color
+                        textColor: legend.info.color
+                        selectedTextColor: legend.info.color
 
                         onClicked: root.selectedChannelRequested(channelIndex)
                     }

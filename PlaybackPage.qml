@@ -82,13 +82,7 @@ Rectangle {
 
     FolderDialog { id: folderDialog; title: qsTr("\u9009\u62e9\u5f55\u5236\u4f1a\u8bdd\u76ee\u5f55"); onAccepted: root.playback.loadSessionUrl(selectedFolder) }
 
-    component ActionButton: Button {
-        id: control
-        property bool primary: false
-        implicitHeight: 34
-        contentItem: Text { text: control.text; color: control.enabled ? "#d9e4ec" : "#71818d"; font.pixelSize: 13; font.bold: control.primary; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-        background: Rectangle { radius: 4; color: control.primary && control.enabled ? "#168b7c" : "#223542"; border.color: control.primary ? "#39a99e" : "#365467" }
-    }
+    component ActionButton: AppButton { fillColor: primary ? "#168b7c" : "#223542" }
     component SummaryCard: Rectangle {
         required property string title
         required property string value
@@ -127,7 +121,7 @@ Rectangle {
         }
         RowLayout {
             Layout.fillWidth: true; Layout.preferredHeight: 34
-            Button {
+            AppButton {
                 id: channelSelectionTool
                 enabled: playback.status === "ready"
                 implicitWidth: 142
@@ -157,11 +151,8 @@ Rectangle {
                         }
                     }
                 }
-                background: Rectangle {
-                    radius: 4
-                    color: channelSelectionTool.down ? "#163d46" : "#1b313d"
-                    border.color: channelSelectionTool.enabled ? "#2b8990" : "#365467"
-                }
+                fillColor: "#1b313d"
+                selectedBorderColor: "#2b8990"
             }
             Rectangle { visible: root.selectedPlaybackChannelId >= 0; Layout.preferredWidth: visible ? 1 : 0; Layout.preferredHeight: 24; Layout.alignment: Qt.AlignVCenter; color: "#365467" }
             Label {
@@ -367,14 +358,17 @@ Rectangle {
                 Layout.fillWidth: true
                 Repeater {
                     model: root.boardCount
-                    delegate: Button {
+                    delegate: AppButton {
                         id: boardButton
                         readonly property bool available: root.playback.channels.some(channel => Math.floor(channel.id / 8) === index)
                         text: qsTr("\u677f\u5361") + (index + 1)
                         enabled: available
                         implicitHeight: 28
-                        contentItem: Text { text: boardButton.text; color: boardButton.enabled ? (root.selectedBoard === index ? "#d9f6f2" : "#8fa3b4") : "#52616b"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { radius: 3; color: root.selectedBoard === index ? "#235d67" : "#162630"; border.color: root.selectedBoard === index ? "#2b8990" : "#365467" }
+                        selected: root.selectedBoard === index
+                        fillColor: "#162630"
+                        selectedFillColor: "#235d67"
+                        textColor: "#8fa3b4"
+                        selectedTextColor: "#d9f6f2"
                         onClicked: root.selectedBoard = index
                     }
                 }
@@ -386,7 +380,7 @@ Rectangle {
                 columnSpacing: 8
                 Repeater {
                     model: 8
-                    delegate: Button {
+                    delegate: AppButton {
                         id: channelButton
                         readonly property int channelId: root.selectedBoard * 8 + index
                         readonly property var channel: root.recordedChannel(channelId)
@@ -395,9 +389,14 @@ Rectangle {
                         enabled: channel !== null
                         Layout.fillWidth: true
                         implicitHeight: 34
+                        selected: channelButton.enabled && root.draftContains(channelButton.channelId)
+                        fillColor: "#162630"
+                        selectedFillColor: "#17313a"
+                        borderColor: "#365467"
+                        selectedBorderColor: channelButton.buttonColor
+                        textColor: "#8fa3b4"
+                        selectedTextColor: channelButton.buttonColor
                         onClicked: root.toggleDraft(channelId)
-                        contentItem: Text { text: channelButton.text; color: channelButton.enabled ? (root.draftContains(channelButton.channelId) ? channelButton.buttonColor : "#8fa3b4") : "#52616b"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { radius: 3; color: channelButton.enabled && root.draftContains(channelButton.channelId) ? "#17313a" : "#162630"; border.color: channelButton.enabled && root.draftContains(channelButton.channelId) ? channelButton.buttonColor : "#365467" }
                     }
                 }
             }

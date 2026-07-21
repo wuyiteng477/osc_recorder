@@ -57,25 +57,7 @@ Rectangle {
     onSampleRateChanged: recorder.setRecordingParameters(sampleRate, enabledChannelCount)
     onEnabledChannelCountChanged: recorder.setRecordingParameters(sampleRate, enabledChannelCount)
 
-    component ActionButton: Button {
-        id: button
-        property color fillColor: "#223542"
-        property bool primary: false
-        implicitHeight: 36
-        contentItem: Text {
-            text: button.text
-            color: button.enabled ? "#e7f1f5" : "#71818d"
-            font.pixelSize: 14
-            font.bold: button.primary
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-        background: Rectangle {
-            radius: 4
-            color: button.enabled ? button.fillColor : "#182630"
-            border.color: button.primary ? "#39a99e" : "#365467"
-        }
-    }
+    component ActionButton: AppButton { implicitHeight: 36 }
 
     component MetricCard: Rectangle {
         id: metricCard

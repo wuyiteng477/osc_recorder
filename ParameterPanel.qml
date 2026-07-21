@@ -50,23 +50,7 @@ Rectangle {
         Layout.topMargin: 5
     }
 
-    component Btn: Button {
-        id: button
-        implicitHeight: 32
-
-        contentItem: Text {
-            text: button.text
-            color: button.enabled ? "#d9e4ec" : "#71818d"
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-
-        background: Rectangle {
-            radius: 3
-            color: button.enabled ? "#223542" : "#29333a"
-            border.color: "#365467"
-        }
-    }
+    component Btn: AppButton { implicitHeight: 32 }
 
     component Separator: Rectangle {
         Layout.fillWidth: true
@@ -238,6 +222,7 @@ Rectangle {
 
             Btn {
                 text: qsTr("\u66f4\u65b0")
+                selected: root.displayMode === "update"
                 Layout.fillWidth: true
                 enabled: root.displayMode !== "update"
                 onClicked: root.displayModeRequested("update")
@@ -245,6 +230,7 @@ Rectangle {
 
             Btn {
                 text: qsTr("\u6eda\u52a8")
+                selected: root.displayMode === "roll"
                 Layout.fillWidth: true
                 enabled: root.displayMode !== "roll"
                 onClicked: root.displayModeRequested("roll")
@@ -252,6 +238,7 @@ Rectangle {
 
             Btn {
                 text: root.gridVisible ? qsTr("\u5173\u95ed\u6805\u683c") : qsTr("\u663e\u793a\u6805\u683c")
+                selected: root.gridVisible
                 Layout.fillWidth: true
                 onClicked: root.gridVisibleRequested(!root.gridVisible)
             }
