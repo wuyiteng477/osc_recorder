@@ -78,6 +78,7 @@ Rectangle {
     }
 
     component MetricCard: Rectangle {
+        id: metricCard
         required property string title
         required property string value
         Layout.fillWidth: true
@@ -89,8 +90,8 @@ Rectangle {
             anchors.fill: parent
             anchors.margins: 10
             spacing: 3
-            Label { text: parent.parent.title; color: "#8fa3b4"; font.pixelSize: 12 }
-            Label { text: parent.parent.value; color: "#e6f0f5"; font.pixelSize: 16; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
+            Label { text: metricCard.title; color: "#8fa3b4"; font.pixelSize: 12 }
+            Label { text: metricCard.value; color: "#e6f0f5"; font.pixelSize: 16; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
         }
     }
 
@@ -118,9 +119,9 @@ Rectangle {
                 implicitWidth: statusLabel.implicitWidth + 20
                 implicitHeight: 28
                 radius: 14
-                color: recorder.status === "recording" ? "#173c38" : recorder.status === "completed" ? "#17313f" : recorder.status === "write_error" || recorder.status === "insufficient_space" || recorder.status === "path_not_writable" ? "#3a2529" : "#1a2d38"
-                border.color: stateColor(recorder.status)
-                Label { id: statusLabel; anchors.centerIn: parent; text: stateText(recorder.status); color: stateColor(recorder.status); font.pixelSize: 13; font.bold: true }
+                color: root.recorder.status === "recording" ? "#173c38" : root.recorder.status === "completed" ? "#17313f" : root.recorder.status === "write_error" || root.recorder.status === "insufficient_space" || root.recorder.status === "path_not_writable" ? "#3a2529" : "#1a2d38"
+                border.color: root.stateColor(root.recorder.status)
+                Label { id: statusLabel; anchors.centerIn: parent; text: root.stateText(root.recorder.status); color: root.stateColor(root.recorder.status); font.pixelSize: 13; font.bold: true }
             }
         }
 
@@ -140,14 +141,14 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 1
                         Label { text: qsTr("\u4fdd\u5b58\u76ee\u5f55"); color: "#8fa3b4"; font.pixelSize: 12 }
-                        Label { text: recorder.saveDirectory; color: "#e6f0f5"; font.pixelSize: 14; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                        Label { text: root.recorder.saveDirectory; color: "#e6f0f5"; font.pixelSize: 14; elide: Text.ElideMiddle; Layout.fillWidth: true }
                     }
-                    ActionButton { text: qsTr("\u9009\u62e9\u76ee\u5f55"); enabled: !recorder.recording; onClicked: folderDialog.open() }
-                    ActionButton { text: qsTr("\u5237\u65b0\u5bb9\u91cf"); enabled: !recorder.recording; onClicked: recorder.refreshStorage() }
-                    ActionButton { text: qsTr("\u5f00\u59cb\u5f55\u5236"); primary: true; fillColor: "#168b7c"; enabled: !recorder.recording; onClicked: root.startRecordingRequested() }
-                    ActionButton { text: qsTr("\u505c\u6b62\u5f55\u5236"); fillColor: recorder.recording ? "#a1514d" : "#223542"; enabled: recorder.recording; onClicked: recorder.stopRecording() }
+                    ActionButton { text: qsTr("\u9009\u62e9\u76ee\u5f55"); enabled: !root.recorder.recording; onClicked: folderDialog.open() }
+                    ActionButton { text: qsTr("\u5237\u65b0\u5bb9\u91cf"); enabled: !root.recorder.recording; onClicked: root.recorder.refreshStorage() }
+                    ActionButton { text: qsTr("\u5f00\u59cb\u5f55\u5236"); primary: true; fillColor: "#168b7c"; enabled: !root.recorder.recording; onClicked: root.startRecordingRequested() }
+                    ActionButton { text: qsTr("\u505c\u6b62\u5f55\u5236"); fillColor: root.recorder.recording ? "#a1514d" : "#223542"; enabled: root.recorder.recording; onClicked: root.recorder.stopRecording() }
                 }
-                Label { text: recorder.statusDetail.length ? recorder.statusDetail : qsTr("\u5df2\u5c31\u7eea\uff0c\u5f55\u5236\u65f6\u5c06\u81ea\u52a8\u521b\u5efa\u72ec\u7acb\u4f1a\u8bdd\u3002"); color: recorder.statusDetail.length ? "#e8a94b" : "#8fa3b4"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                Label { text: root.recorder.statusDetail.length ? root.recorder.statusDetail : qsTr("\u5df2\u5c31\u7eea\uff0c\u5f55\u5236\u65f6\u5c06\u81ea\u52a8\u521b\u5efa\u72ec\u7acb\u4f1a\u8bdd\u3002"); color: root.recorder.statusDetail.length ? "#e8a94b" : "#8fa3b4"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
             }
         }
 
@@ -156,11 +157,11 @@ Rectangle {
             columns: 5
             columnSpacing: 10
             rowSpacing: 0
-            MetricCard { title: qsTr("\u7406\u8bba\u6570\u636e\u901f\u7387"); value: root.bytes(recorder.theoreticalBytesPerSecond) + "/s" }
-            MetricCard { title: qsTr("\u5f53\u524d\u53ef\u7528\u7a7a\u95f4"); value: root.bytes(recorder.availableBytes) }
+            MetricCard { title: qsTr("\u7406\u8bba\u6570\u636e\u901f\u7387"); value: root.bytes(root.recorder.theoreticalBytesPerSecond) + "/s" }
+            MetricCard { title: qsTr("\u5f53\u524d\u53ef\u7528\u7a7a\u95f4"); value: root.bytes(root.recorder.availableBytes) }
             MetricCard { title: qsTr("\u9884\u8ba1\u53ef\u5f55\u5236\u65f6\u957f"); value: root.duration(root.estimatedSeconds * 1000) }
-            MetricCard { title: qsTr("\u5df2\u5f55\u5236\u65f6\u957f"); value: root.duration(recorder.recordedMilliseconds) }
-            MetricCard { title: qsTr("\u5f53\u524d\u6587\u4ef6\u5927\u5c0f"); value: root.bytes(recorder.simulatedFileBytes) }
+            MetricCard { title: qsTr("\u5df2\u5f55\u5236\u65f6\u957f"); value: root.duration(root.recorder.recordedMilliseconds) }
+            MetricCard { title: qsTr("\u5f53\u524d\u6587\u4ef6\u5927\u5c0f"); value: root.bytes(root.recorder.simulatedFileBytes) }
         }
 
         Rectangle {
@@ -178,8 +179,8 @@ Rectangle {
                     Label { text: qsTr("\u5f55\u5236\u6458\u8981"); color: "#d9e4ec"; font.bold: true; font.pixelSize: 14; Layout.preferredHeight: 18; verticalAlignment: Text.AlignVCenter }
                     Item { Layout.fillWidth: true }
                 }
-                Label { text: qsTr("\u4f1a\u8bdd\u76ee\u5f55\uff1a") + (recorder.sessionDirectory.length ? recorder.sessionDirectory : qsTr("\u5c1a\u672a\u521b\u5efa")); color: "#d9e4ec"; font.pixelSize: 12; elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredHeight: 18; verticalAlignment: Text.AlignVCenter }
-                Label { text: qsTr("\u5f00\u59cb / \u7ed3\u675f\uff1a") + (recorder.createdAt.length ? recorder.createdAt : "-") + " / " + (recorder.finishedAt.length ? recorder.finishedAt : "-"); color: "#8fa3b4"; font.pixelSize: 12; elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredHeight: 18; verticalAlignment: Text.AlignVCenter }
+                Label { text: qsTr("\u4f1a\u8bdd\u76ee\u5f55\uff1a") + (root.recorder.sessionDirectory.length ? root.recorder.sessionDirectory : qsTr("\u5c1a\u672a\u521b\u5efa")); color: "#d9e4ec"; font.pixelSize: 12; elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredHeight: 18; verticalAlignment: Text.AlignVCenter }
+                Label { text: qsTr("\u5f00\u59cb / \u7ed3\u675f\uff1a") + (root.recorder.createdAt.length ? root.recorder.createdAt : "-") + " / " + (root.recorder.finishedAt.length ? root.recorder.finishedAt : "-"); color: "#8fa3b4"; font.pixelSize: 12; elide: Text.ElideMiddle; Layout.fillWidth: true; Layout.preferredHeight: 18; verticalAlignment: Text.AlignVCenter }
                 Label { text: "session.json  \u00b7  waveform.part/bin  \u00b7  index.csv  \u00b7  recording.log"; color: "#8fa3b4"; font.pixelSize: 12; Layout.preferredHeight: 18; verticalAlignment: Text.AlignVCenter }
                 RowLayout {
                     Layout.fillWidth: true

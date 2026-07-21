@@ -7,7 +7,6 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     required property string currentPage
-    property bool playbackExpanded: false
     signal pageRequested(string page)
     color: "#15212c"
     border.color: "#314252"
@@ -46,11 +45,7 @@ Rectangle {
             border.color: root.currentPage === button.page ? "#2b8990" : "transparent"
         }
 
-        onClicked: {
-            if (button.page === "realtime")
-                root.playbackExpanded = !root.playbackExpanded
-            root.pageRequested(button.page)
-        }
+        onClicked: root.pageRequested(button.page)
     }
 
     ColumnLayout {
@@ -67,7 +62,7 @@ Rectangle {
         }
 
         NavigationButton { page: "realtime"; title: qsTr("\u5b9e\u65f6\u6ce2\u5f62") }
-        NavigationButton { visible: root.playbackExpanded || root.currentPage === "playback"; page: "playback"; title: qsTr("  \u2514 \u5386\u53f2\u56de\u653e"); implicitHeight: 34; leftPadding: 24 }
+        NavigationButton { page: "playback"; title: qsTr("\u5386\u53f2\u56de\u653e") }
         NavigationButton { page: "channels"; title: qsTr("\u901a\u9053\u8bbe\u7f6e") }
         NavigationButton { page: "acquisition"; title: qsTr("\u91c7\u96c6\u8bbe\u7f6e") }
         NavigationButton { page: "recording"; title: qsTr("\u6570\u636e\u5f55\u5236") }

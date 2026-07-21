@@ -19,6 +19,7 @@ class PlaybackBackend : public QObject
     Q_PROPERTY(qint64 dataBytes READ dataBytes NOTIFY changed)
     Q_PROPERTY(quint64 gapCount READ gapCount NOTIFY changed)
     Q_PROPERTY(QVariantList channels READ channels NOTIFY changed)
+    Q_PROPERTY(int displayedChannelCount READ displayedChannelCount NOTIFY changed)
     Q_PROPERTY(QVariantList frames READ frames NOTIFY changed)
     Q_PROPERTY(double viewStartSeconds READ viewStartSeconds NOTIFY changed)
     Q_PROPERTY(double viewDurationSeconds READ viewDurationSeconds NOTIFY changed)
@@ -29,11 +30,13 @@ public:
     QString startedAt() const; QString finishedAt() const; int sampleRate() const;
     double durationSeconds() const; qint64 dataBytes() const; quint64 gapCount() const;
     QVariantList channels() const; QVariantList frames() const;
+    int displayedChannelCount() const;
     double viewStartSeconds() const; double viewDurationSeconds() const;
 
     Q_INVOKABLE bool loadSessionUrl(const QUrl &url);
     Q_INVOKABLE bool loadSessionPath(const QString &path);
     Q_INVOKABLE void setDisplayChannels(const QVariantList &zeroBasedIds);
+    Q_INVOKABLE bool toggleDisplayChannel(int zeroBasedId, bool selected);
     Q_INVOKABLE void setView(double startSeconds, double durationSeconds);
     Q_INVOKABLE void moveView(double seconds);
     Q_INVOKABLE void resetView();

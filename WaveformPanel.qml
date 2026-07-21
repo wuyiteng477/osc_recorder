@@ -19,6 +19,7 @@ Rectangle {
     required property real latestSampleTime
     required property real historyOffsetSeconds
     required property real samplePeriodSeconds
+    property bool waveformLabelsVisible: true
     signal selectedChannelRequested(int index)
     signal startRequested(); signal stopRequested(); signal verticalFitRequested(); signal resetPositionsRequested(); signal clearHistoryRequested()
     readonly property real visibleTimeSeconds: timePerDivMs * 10 / 1000
@@ -151,7 +152,7 @@ Rectangle {
 
             Canvas {
                 id: waveformCanvas; anchors.fill: parent; anchors.margins: 1
-                onWidthChanged: { root.rebuildFrame(); root.schedulePaint() }
+                onWidthChanged: root.schedulePaint()
                 onPaint: {
                     const context = getContext("2d"), width = waveformCanvas.width, height = waveformCanvas.height
                     if (width <= 0 || height <= 0)
@@ -277,7 +278,8 @@ Rectangle {
 
                         context.fillStyle = data.color
                         context.font = "12px sans-serif"
-                        context.fillText(data.name + "  " + root.formatNumber(current) + " V  " + root.formatNumber(data.voltsPerDiv) + " V/div", 8, top + 15)
+                        if (root.waveformLabelsVisible)
+                            context.fillText(data.name + "  " + root.formatNumber(current) + " V  " + root.formatNumber(data.voltsPerDiv) + " V/div", 8, top + 15)
 
                         context.strokeStyle = "#365467"
                         context.beginPath()
@@ -350,6 +352,11 @@ Rectangle {
             ActionButton {
                 text: qsTr("\u4f4d\u7f6e\u590d\u4f4d")
                 onClicked: root.resetPositionsRequested()
+            }
+
+            ActionButton {
+                text: root.waveformLabelsVisible ? qsTr("隐藏标注") : qsTr("显示标注")
+                onClicked: { root.waveformLabelsVisible = !root.waveformLabelsVisible; root.schedulePaint() }
             }
 
             Item {

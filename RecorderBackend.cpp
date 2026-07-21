@@ -120,18 +120,33 @@ bool RecorderBackend::writeBlock(const Block &block)
     samples.setFloatingPointPrecision(QDataStream::SinglePrecision);
     for (quint32 sample = 0; sample < block.count; ++sample) {
         const double time = block.startTime + double(sample) / m_sampleRate;
-        for (int channel : m_channelIds) { const double frequency = 125.0 + ((channel + 1) % 16) * 47.0; samples << float(qSin(Tau * frequency * time + (channel + 1) * .37)); }
+        for (int channel : m_channelIds) {
+            // Mirror ChannelStore.valueFor(): recording must contain the same
+            // simulated sample values currently shown by the real-time view.
+            const int channelId = channel + 1;
+            const double frequency = 125.0 + (channelId % 16) * 47.0;
+            const double amplitude = .55 + (channelId % 5) * .12;
+            const double phase = channelId * .37;
+            const double carrier = qSin(Tau * frequency * time + phase);
+            const double harmonic = .08 * qSin(Tau * frequency * 3.0 * time + phase + .4);
+            const double modulation = 1.0 + .12 * qSin(Tau * (.06 + channelId * .01) * time + phase);
+            const double noise = .012 * qSin((190 + channelId * 31) * time) + .006 * qSin((430 + channelId * 41) * time);
+            samples << float(amplitude * (modulation * (carrier + harmonic) + noise));
+        }
     }
     if (samples.status() != QDataStream::Ok) return false;
-    const qint64 offset = m_dataFile.pos(); const float relativeStart = float(block.startTime - m_firstBlockTime); const quint32 checksum = crc32(payload);
+    const qint64 offset = m_dataFile.pos();
+    const double relativeStart = block.startTime - m_firstBlockTime;
+    const float storedRelativeStart = float(relativeStart);
+    const quint32 checksum = crc32(payload);
     QDataStream header(&m_dataFile); header.setByteOrder(QDataStream::LittleEndian); header.setFloatingPointPrecision(QDataStream::SinglePrecision);
-    header << BlockMagic << relativeStart << block.firstSample << block.count << quint32(0) << quint32(payload.size()) << checksum << quint32(0);
+    header << BlockMagic << storedRelativeStart << block.firstSample << block.count << quint32(0) << quint32(payload.size()) << checksum << quint32(0);
     if (header.status() != QDataStream::Ok || m_dataFile.write(payload) != payload.size() || !m_dataFile.flush()) return false;
     if (!m_dataFile.seek(offset + BlockHeaderBytes - 4)) return false;
     QDataStream commit(&m_dataFile); commit.setByteOrder(QDataStream::LittleEndian); commit << BlockCommitted;
     if (commit.status() != QDataStream::Ok || !m_dataFile.flush()) return false;
     m_dataFile.seek(offset + BlockHeaderBytes + payload.size());
-    m_indexFile.write(QByteArray::number(relativeStart, 'f', 6) + ',' + QByteArray::number(block.firstSample) + ',' + QByteArray::number(block.count) + ',' + QByteArray::number(offset) + ',' + QByteArray::number(payload.size()) + ',' + QByteArray::number(checksum) + ",1\n");
+    m_indexFile.write(QByteArray::number(relativeStart, 'f', 9) + ',' + QByteArray::number(block.firstSample) + ',' + QByteArray::number(block.count) + ',' + QByteArray::number(offset) + ',' + QByteArray::number(payload.size()) + ',' + QByteArray::number(checksum) + ",1\n");
     return true;
 }
 

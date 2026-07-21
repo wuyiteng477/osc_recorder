@@ -9,6 +9,8 @@
 #include <QJsonObject>
 #include <QStringList>
 
+#include <cmath>
+
 namespace {
 constexpr quint32 FileMagic = 0x4f534352;
 constexpr quint32 BlockMagic = 0x424c4b31;
@@ -28,6 +30,7 @@ qint64 PlaybackBackend::dataBytes() const { return m_dataBytes; }
 quint64 PlaybackBackend::gapCount() const { return m_gapCount; }
 QVariantList PlaybackBackend::channels() const { return m_channels; }
 QVariantList PlaybackBackend::frames() const { return m_frames; }
+int PlaybackBackend::displayedChannelCount() const { return m_displayIds.size(); }
 double PlaybackBackend::viewStartSeconds() const { return m_viewStart; }
 double PlaybackBackend::viewDurationSeconds() const { return m_viewDuration; }
 
@@ -84,6 +87,10 @@ bool PlaybackBackend::parseAndValidate(const QString &directory, const QString &
     m_durationSeconds = object.value("dataDurationSeconds").toDouble(); m_dataBytes = qint64(object.value("dataBytes").toDouble()); m_gapCount = quint64(object.value("gapCount").toDouble());
     m_startedAt = object.value("startedAt").toString(); m_finishedAt = object.value("finishedAt").toString(); m_sessionDirectory = directory; m_dataPath = QDir(directory).filePath(dataName);
     if (m_sampleRate <= 0 || m_durationSeconds < 0 || !QFileInfo::exists(m_dataPath)) return fail(tr("采样率、时长或 waveform.bin 无效。"));
+    const double samplePeriod = 1.0 / double(m_sampleRate);
+    const double expectedDuration = double(m_sampleCount) * samplePeriod;
+    if (std::abs(m_durationSeconds - expectedDuration) > samplePeriod * .5)
+        return fail(tr("session.json 的数据时长与采样率、样本数不一致。"));
     if (QFileInfo(m_dataPath).size() != m_dataBytes) return fail(tr("waveform.bin 文件大小与 session.json 不一致。"));
 
     QFile index(QDir(directory).filePath("index.csv"));
@@ -95,11 +102,14 @@ bool PlaybackBackend::parseAndValidate(const QString &directory, const QString &
         if (fields.size() != 7) return fail(tr("index.csv 字段数量错误。"));
         Block block; block.start = fields[0].toDouble(); block.first = fields[1].toULongLong(); block.count = fields[2].toUInt(); block.offset = fields[3].toLongLong(); block.bytes = fields[4].toUInt(); block.crc = fields[5].toUInt();
         if (fields[6] != "1" || block.first != expectedFirst || block.count == 0 || block.bytes != block.count * quint32(m_channelCount) * 4) return fail(tr("index.csv 样本序号、提交标记或数据长度无效。"));
+        const double expectedStart = double(block.first) / double(m_sampleRate);
+        if (std::abs(block.start - expectedStart) > qMax(1e-6, 1.0 / double(m_sampleRate)))
+            return fail(tr("index.csv 的块开始时间与样本序号、采样率不一致。"));
         if (!validateBlock(block)) return false;
         expectedFirst += block.count; expectedEnd = block.offset + BlockHeaderBytes + block.bytes; m_blocks.append(block);
     }
     if (m_blocks.isEmpty() || expectedFirst != m_sampleCount || QFileInfo(m_dataPath).size() != expectedEnd) return fail(tr("索引记录与数据文件大小或样本数不一致。"));
-    m_displayIds = m_channelIds.mid(0, 8); m_viewDuration = qMin(qMax(.001, m_durationSeconds), .1); m_viewStart = qMax(0.0, m_durationSeconds - m_viewDuration);
+    m_displayIds = m_channelIds.mid(0, 8); m_viewDuration = qMin(qMax(samplePeriod, m_durationSeconds), .1); m_viewStart = qMax(0.0, m_durationSeconds - m_viewDuration);
     m_status = QStringLiteral("ready"); m_detail = tr("会话校验完成。"); loadWindow(); emit eventLogged(tr("历史录制会话已加载。"), "INFO"); return true;
 }
 
@@ -118,7 +128,6 @@ bool PlaybackBackend::validateBlock(const Block &block, QByteArray *payload)
 void PlaybackBackend::setDisplayChannels(const QVariantList &ids)
 {
     QList<int> next; for (const QVariant &value : ids) { const int id = value.toInt(); if (m_channelIds.contains(id) && !next.contains(id) && next.size() < 8) next.append(id); }
-    if (next.isEmpty() && !m_channelIds.isEmpty()) next.append(m_channelIds.first());
     m_displayIds = next;
     for (int index = 0; index < m_channels.size(); ++index) {
         QVariantMap channel = m_channels[index].toMap();
@@ -128,9 +137,42 @@ void PlaybackBackend::setDisplayChannels(const QVariantList &ids)
     loadWindow();
 }
 
+bool PlaybackBackend::toggleDisplayChannel(int zeroBasedId, bool selected)
+{
+    if (!m_channelIds.contains(zeroBasedId)) return false;
+    QList<int> next = m_displayIds;
+    if (selected) {
+        if (next.contains(zeroBasedId)) return true;
+        if (next.size() >= 8) { m_detail = tr("最多同时显示8个通道。"); emit changed(); return false; }
+        next.append(zeroBasedId);
+    } else {
+        next.removeAll(zeroBasedId);
+    }
+    QVariantList values; for (int id : next) values.append(id);
+    setDisplayChannels(values);
+    m_detail = next.isEmpty() ? tr("请选择至少一个回放通道。") : tr("当前时间窗口已更新。");
+    emit changed();
+    return true;
+}
+
 void PlaybackBackend::setView(double start, double duration)
 {
-    if (m_status != "ready") return; m_viewDuration = qBound(.001, duration, qMax(.001, m_durationSeconds)); m_viewStart = qBound(0.0, start, qMax(0.0, m_durationSeconds - m_viewDuration)); loadWindow();
+    if (m_status != "ready" || m_sampleRate <= 0)
+        return;
+
+    // Playback positions are always snapped to the file's real sample grid.
+    // This prevents sub-sample UI values from selecting different visual frames
+    // without advancing an actual recorded sample.
+    const double samplePeriod = 1.0 / double(m_sampleRate);
+    const double maximumDuration = qMax(samplePeriod, m_durationSeconds);
+    const double boundedDuration = qBound(samplePeriod, duration, maximumDuration);
+    const auto durationSamples = qMax<qint64>(1, qRound64(boundedDuration / samplePeriod));
+    m_viewDuration = qMin(maximumDuration, double(durationSamples) * samplePeriod);
+
+    const double maximumStart = qMax(0.0, m_durationSeconds - m_viewDuration);
+    const auto startSample = qMax<qint64>(0, qRound64(qBound(0.0, start, maximumStart) / samplePeriod));
+    m_viewStart = qMin(maximumStart, double(startSample) * samplePeriod);
+    loadWindow();
 }
 void PlaybackBackend::moveView(double seconds) { setView(m_viewStart + seconds, m_viewDuration); }
 void PlaybackBackend::resetView() { setView(qMax(0.0, m_durationSeconds - m_viewDuration), m_viewDuration); }
