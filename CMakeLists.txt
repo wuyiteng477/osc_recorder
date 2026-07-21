@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(osc_recorder VERSION 0.1 LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(QT_QML_GENERATE_QMLLS_INI ON)
 
@@ -20,6 +21,11 @@ qt_add_executable(apposc_recorder
 
 qt_add_qml_module(apposc_recorder
     URI osc_recorder
+    SOURCES
+  RecorderBackend.cpp
+  RecorderBackend.h
+  PlaybackBackend.cpp
+  PlaybackBackend.h
     QML_FILES
         Main.qml
         ChannelStore.qml
@@ -28,7 +34,8 @@ qt_add_qml_module(apposc_recorder
         ParameterPanel.qml
         ChannelSettingsPage.qml
         AcquisitionSettingsPage.qml
-        RecordingPage.qml
+  RecordingPage.qml
+  PlaybackPage.qml
         SystemStatusPage.qml
 )
 

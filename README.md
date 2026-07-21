@@ -17,6 +17,16 @@
 
 The acquisition settings page immediately applies sample rate, continuous/burst mode, eight-board bulk selection, and CH1-CH64 acquisition-channel changes while stopped. `Main.qml` retains the applied configuration shared by simulation, waveform, system status, and top status. Sample rate changes the batch size of the sole 20 ms acquisition Timer; burst mode writes a 100 ms batch every fifth tick. Acquisition can use all 64 channels while display remains independently capped at eight waveforms. Configuration changes, start, stop, and validation failures are logged.
 
+## Simulated recording and portable storage
+
+`RecorderBackend` is the single recording-state model. Its default directory is `QStandardPaths::DocumentsLocation/OscRecorder`; the QML `FolderDialog` converts a selected `QUrl` with `toLocalFile()` before handing it to the backend. `QDir`, `QFileInfo`, and `QStorageInfo` handle local paths, write checks, and target-volume capacity without platform-specific mount points or drive letters.
+
+The theoretical acquisition rate is `sampleRate × enabledChannels × 4 bytes`. Recording requires active acquisition. Each acquired batch is queued and flushed by one recording worker timer as interleaved, little-endian float32 values in explicit `channelIds` order. `waveform.part` has an absolute start-time file header; its blocks use relative float32 start time from the first acquired block, first sample sequence, count, gap flag, payload byte count, CRC-32, and a final commit marker. Individual samples never repeat timestamps; replay reconstructs their time from the block start plus `sampleSequence / sampleRate`. Safe stop flushes pending blocks, validates every `index.csv` offset/sequence/CRC against the data-file size, then seals it as `waveform.bin`. The final directory is named `recording_yyyyMMdd_HHmmss_zzz/` using stop time and contains `session.json`, `waveform.bin`, `index.csv`, and `recording.log`. `session.json` version 2 records `formatVersion`, `sampleType`, `byteOrder`, explicit zero-based channel indexes with `CHn` display names, sample count, `dataDurationSeconds`, `wallDurationSeconds` calculated strictly from `finishedAt - startedAt`, and `activeRecordingSeconds` for the effective run time before stop/flush work. It also records millisecond-precision start/end time, final status, size, and gap count—but no sample payload. The recording log records successful `.part` validation and rename to `waveform.bin`. A disabled “include time column” control reserves the later CSV-export policy. Statuses are `not_ready`, `ready`, `recording`, `stopping`, `completed`, `insufficient_space`, `path_not_writable`, and `write_error`. Stopping acquisition safely stops an active recording first.
+
+## History playback
+
+Clicking the real-time waveform navigation item expands **History Playback**. `PlaybackBackend` loads a selected local session directory or `session.json` using Qt file APIs only. Before display it requires `formatVersion: 2`, `finalStatus: completed`, little-endian `float32`, explicit channel identifiers, `waveform.bin`, and `index.csv`. It compares JSON and raw-file sizes, checks index order and payload lengths, then reads every block header and CRC/commit marker sequentially for validation. Playback keeps only the index metadata in memory; waveform points are decoded from float32 interleaved blocks that intersect the active time window, never by loading the complete raw data file at once. The page is independent of `ChannelStore` and the acquisition timer, supports up to eight selected channels in separate views, and has time-window pan, zoom, and reset controls. Missing files, unsupported versions, incomplete sessions, index mismatches, and CRC errors are reported as explicit load errors. The CSV time-column UI is hidden; its recording-side interface remains reserved for a later export feature.
+
 ## Waveform timebase and anti-aliasing
 
 Waveform rendering reads the fixed-capacity history buffer using each sample's timestamp, not a current sample-rate-derived index or a display-frame-generated signal. Changing ms/div only changes the visible time window; it does not reset time, phase, history, or the signal generator. When the visible sample count fits the Canvas width, every raw point is drawn. Larger windows use a min/max envelope per pixel column, preventing the fixed-stride aliasing that previously made high-frequency channels appear as false low-frequency or beat signals. Changing timebase records a fixed 100 ms zero-crossing frequency check for enabled CH1-CH8 in the runtime log.
@@ -163,7 +173,7 @@ flowchart LR
 | `ParameterPanel.qml` | CH1 只读模拟参数 |
 | `ChannelSettingsPage.qml` | 通道设置占位页面 |
 | `AcquisitionSettingsPage.qml` | 采集设置占位页面 |
-| `RecordingPage.qml` | 数据录制占位页面 |
+| `RecordingPage.qml` | 目录选择、容量估算、会话状态和模拟录制控制页面 |
 | `SystemStatusPage.qml` | 与运行状态联动的系统状态页 |
 
 ---

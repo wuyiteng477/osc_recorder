@@ -22,7 +22,21 @@ Rectangle {
     signal moveHistoryLeftRequested()
     signal moveHistoryRightRequested()
     signal resetHistoryPositionRequested()
-    readonly property var channel: channelStore.channel(selectedChannelIndex)
+    // The model is populated after this panel is constructed.  Include the
+    // store revision in the binding so initial CH1 is refreshed automatically,
+    // rather than requiring a temporary switch to another channel.
+    readonly property var channel: {
+        const storeRevision = channelStore.revision
+        if (channelStore.channelModel.count <= selectedChannelIndex)
+            return ({ name: "CH" + (selectedChannelIndex + 1), color: "#71818d", voltsPerDiv: 1, verticalOffsetV: 0, defaultOffsetV: 0 })
+        return channelStore.channel(selectedChannelIndex)
+    }
+    // The parameter panel edits waveform presentation, so it should expose
+    // only channels that currently own a real-time waveform view (maximum 8).
+    readonly property var editableChannelIndexes: {
+        const storeRevision = channelStore.revision
+        return channelStore.activeViewChannels()
+    }
     color: "#15212c"
     border.color: "#314252"
 
@@ -78,15 +92,21 @@ Rectangle {
             id: channels
             Layout.fillWidth: true
             implicitHeight: 32
-            model: root.channelStore.channelModel
-            textRole: "name"
-            currentIndex: root.selectedChannelIndex
+            model: root.editableChannelIndexes
+            enabled: root.editableChannelIndexes.length > 0
+            currentIndex: Math.max(0, root.editableChannelIndexes.indexOf(root.selectedChannelIndex))
 
-            onActivated: root.selectedChannelRequested(currentIndex)
+            onActivated: root.selectedChannelRequested(root.editableChannelIndexes[currentIndex])
+
+            delegate: ItemDelegate {
+                required property var modelData
+                width: channels.width
+                text: root.channelStore.channel(modelData).name
+            }
 
             contentItem: Text {
                 leftPadding: 10
-                text: channels.currentText
+                text: root.channel.name
                 color: root.channel.color
                 verticalAlignment: Text.AlignVCenter
             }
