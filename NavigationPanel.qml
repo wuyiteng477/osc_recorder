@@ -62,7 +62,6 @@ Rectangle {
         NavigationButton { page: "channels"; title: qsTr("\u901a\u9053\u8bbe\u7f6e") }
         NavigationButton { page: "acquisition"; title: qsTr("\u91c7\u96c6\u8bbe\u7f6e") }
         NavigationButton { page: "recording"; title: qsTr("\u6570\u636e\u5f55\u5236") }
-        NavigationButton { page: "system"; title: qsTr("\u7cfb\u7edf\u72b6\u6001") }
 
         Item {
             Layout.fillHeight: true

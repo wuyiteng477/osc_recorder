@@ -67,6 +67,7 @@ ApplicationWindow {
     ChannelStore { id: dataStore }
     AcquisitionBackend { id: acquisitionBackend }
     RealtimeDataBackend { id: realtimeData }
+    SystemInfoBackend { id: systemInfo }
     RecorderBackend {
         id: recorderBackend
         onEventLogged: (message, level) => window.appendLog(message, message, level)
@@ -74,6 +75,15 @@ ApplicationWindow {
     PlaybackBackend {
         id: playbackBackend
         onEventLogged: (message, level) => window.appendLog(message, message, level)
+    }
+    SystemStatusPage {
+        id: systemDialog
+        systemInfo: systemInfo
+        onDiagnosticRequested: {
+            const path = systemInfo.exportDiagnostics({ simulationRunning: window.simulationRunning, simulationRate: window.simulationGenerationRate, enabledChannels: window.enabledAcquisitionChannels, acquisitionMode: window.acquisitionConfig.mode })
+            if (path.length)
+                window.appendLog("诊断信息已导出：" + path, "Diagnostic information exported: " + path)
+        }
     }
 
     function formatNumber(value) {
@@ -90,6 +100,7 @@ ApplicationWindow {
         const message = logLanguage === "en" ? (englishMessage || chineseMessage) : chineseMessage
 
         logModel.append({ message: "[" + stamp + "] [" + (level || "INFO") + "] " + message })
+        systemInfo.appendLog("[" + (level || "INFO") + "] " + message)
         if (logModel.count > 100)
             logModel.remove(0)
         logView.positionViewAtEnd()
@@ -229,6 +240,17 @@ ApplicationWindow {
             return false
         }
 
+        const simulationRateChanged = acquisitionConfig.simulationStressRate !== config.simulationStressRate
+        if (simulationRateChanged) {
+            // Real-time pyramid levels are fixed-dt generations.  Invalidate
+            // them before the new rate can reach the waveform page; otherwise
+            // a low-rate display decision could attempt to draw an old
+            // high-rate raw window on the first frame.
+            realtimeData.clearHistory()
+            sharedHistoryOffset = 0
+            followLatest = true
+            latestSampleTime = sampleTimeSeconds
+        }
         acquisitionConfig = {
             mode: config.mode,
             boardEnabled: config.boardEnabled.slice(),
@@ -236,6 +258,7 @@ ApplicationWindow {
             boardSampleRates: config.boardSampleRates.slice(),
             simulationStressRate: config.simulationStressRate
         }
+        systemInfo.writeConfiguration(acquisitionConfig)
         ++acquisitionConfigRevision
         // Board selection is a sampling gate as well as a UI choice.  A channel
         // can never remain active in the simulator when its board is disabled.
@@ -251,7 +274,7 @@ ApplicationWindow {
             }
         }
 
-        appendLog("采集配置已应用：" + enabledAcquisitionChannels + " 路，模拟生成 " + simulationGenerationRate + " S/s，硬件预计吞吐 " + estimatedHardwareThroughput() + " B/s。", "Acquisition configuration applied: " + enabledAcquisitionChannels + " channels, simulation " + simulationGenerationRate + " S/s, hardware throughput " + estimatedHardwareThroughput() + " B/s.")
+        appendLog("采集配置已应用：" + enabledAcquisitionChannels + " 路，模拟生成 " + simulationGenerationRate + " S/s，硬件预计吞吐 " + estimatedHardwareThroughput() + " B/s。" + (simulationRateChanged ? "模拟采样率已变更，实时历史已切换到新缓存。" : ""), "Acquisition configuration applied: " + enabledAcquisitionChannels + " channels, simulation " + simulationGenerationRate + " S/s, hardware throughput " + estimatedHardwareThroughput() + " B/s." + (simulationRateChanged ? " Real-time cache generation changed." : ""))
         return true
     }
     function setSelectedChannel(index) {
@@ -360,12 +383,13 @@ ApplicationWindow {
     ListModel { id: logModel }
     // Display refresh stays independent from generated sample rate and time/div.
     Timer { interval: Math.round(1000 / window.displayRefreshRate); running: window.simulationRunning; repeat: true; onTriggered: window.runSimulationTick() }
-    Component.onCompleted: appendLog("软件已就绪，64 通道模拟模式", "Application ready in 64-channel simulation mode")
+    Component.onCompleted: { systemInfo.writeConfiguration(acquisitionConfig); appendLog("软件已就绪，64 通道模拟模式", "Application ready in 64-channel simulation mode") }
 
     ColumnLayout {
         anchors.fill: parent; spacing: 0
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 54; color: "#15212c"; border.color: "#314252"
-            RowLayout { anchors.fill: parent; anchors.margins: 18; Label { text: window.title; color: "#f0f6f8"; font.pixelSize: 18; font.bold: true } Item { Layout.fillWidth: true } Label { text: (window.currentPage === "playback" ? qsTr("\u5b9e\u65f6\u91c7\u96c6\uff1a") : qsTr("\u91c7\u96c6: ")) + (window.simulationRunning ? qsTr("\u8fd0\u884c\u4e2d") : qsTr("\u5df2\u505c\u6b62")); color: window.simulationRunning ? "#35d19b" : "#8fa3b4"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: qsTr("\u6a21\u62df\u751f\u6210\uff1a") + window.simulationGenerationRate + " S/s · " + qsTr("\u91c7\u96c6\u901a\u9053\uff1a") + window.enabledAcquisitionChannels + qsTr(" \u8def"); color: "#d9e4ec"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: window.acquisitionConfig.mode === "burst" ? "Burst" : "Continuous"; color: "#19b4a5"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } }
+            AppButton { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; anchors.rightMargin: 16; text: "⚙"; implicitWidth: 34; implicitHeight: 30; fillColor: "transparent"; borderColor: "#365467"; textColor: "#d9e4ec"; font.pixelSize: 18; z: 2; onClicked: systemDialog.open() }
+            RowLayout { anchors.fill: parent; anchors.leftMargin: 18; anchors.topMargin: 18; anchors.bottomMargin: 18; anchors.rightMargin: 62; Label { text: window.title; color: "#f0f6f8"; font.pixelSize: 18; font.bold: true } Item { Layout.fillWidth: true } Label { text: (window.currentPage === "playback" ? qsTr("\u5b9e\u65f6\u91c7\u96c6\uff1a") : qsTr("\u91c7\u96c6: ")) + (window.simulationRunning ? qsTr("\u8fd0\u884c\u4e2d") : qsTr("\u5df2\u505c\u6b62")); color: window.simulationRunning ? "#35d19b" : "#8fa3b4"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: qsTr("\u6a21\u62df\u751f\u6210\uff1a") + window.simulationGenerationRate + " S/s · " + qsTr("\u91c7\u96c6\u901a\u9053\uff1a") + window.enabledAcquisitionChannels + qsTr(" \u8def"); color: "#d9e4ec"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: window.acquisitionConfig.mode === "burst" ? "Burst" : "Continuous"; color: "#19b4a5"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } }
         }
         RowLayout { Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
             // The navigation is intentionally a column of its own, including
@@ -378,7 +402,7 @@ ApplicationWindow {
                 ChannelSettingsPage { channelStore: dataStore; onChannelNameRequested: (index, name) => window.setChannelName(index, name); onChannelVisibleRequested: (index, value) => window.setChannelVisible(index, value); onChannelColorRequested: (index, color) => window.setChannelColor(index, color) }
                 AcquisitionSettingsPage { acquisitionConfig: window.acquisitionConfig; capabilityBackend: acquisitionBackend; configurationRevision: window.acquisitionConfigRevision; simulationRunning: window.simulationRunning || recorderBackend.recording; onApplyRequested: config => window.applyAcquisitionConfiguration(config); onStopAndApplyRequested: config => { if (window.simulationRunning) window.stopSimulation(); window.applyAcquisitionConfiguration(config) } }
                 RecordingPage { recorder: recorderBackend; sampleRate: window.simulationGenerationRate; enabledChannelCount: window.enabledAcquisitionChannels; acquisitionMode: window.acquisitionConfig.mode; simulationRunning: window.simulationRunning; channelIds: window.enabledChannelIds(); onStartRecordingRequested: window.startRecording() }
-                SystemStatusPage { simulationRunning: window.simulationRunning; simulationGenerationRate: window.simulationGenerationRate; displayRefreshRate: window.displayRefreshRate; estimatedHardwareThroughput: window.estimatedHardwareThroughput(); estimatedSimulationThroughput: window.estimatedSimulationThroughput(); acquisitionMode: window.acquisitionConfig.mode; enabledChannelCount: window.enabledAcquisitionChannels; enabledBoardCount: window.acquisitionConfig.boardEnabled.filter(value => value).length }
+                Item { }
                 }
                 Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 94; color: "#121d27"; border.color: "#314252"
                     ColumnLayout { anchors.fill: parent; anchors.margins: 8; spacing: 3

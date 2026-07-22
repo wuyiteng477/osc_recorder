@@ -39,7 +39,7 @@ signals:
 private:
     static constexpr int ChannelCount = 64;
     static constexpr quint64 Capacity = 262144;
-    struct Bucket { float minimum = 0.f; float maximum = 0.f; quint64 minIndex = 0; quint64 maxIndex = 0; quint64 group = std::numeric_limits<quint64>::max(); };
+    struct Bucket { float minimum = 0.f; float maximum = 0.f; quint64 minIndex = 0; quint64 maxIndex = 0; quint64 group = std::numeric_limits<quint64>::max(); quint32 epoch = 0; };
     struct Level { quint64 groupSize = 1; quint64 capacity = 0; std::vector<quint64> groups; std::array<std::vector<Bucket>, ChannelCount> channels; };
 
     float valueFor(int channelIndex, double time) const;
@@ -49,16 +49,23 @@ private:
     float valueAt(int channelIndex, quint64 sampleIndex) const;
     double timeAt(quint64 sampleIndex) const;
     void updateLevels(quint64 sampleIndex, int channelIndex, float value);
+    void resetHistoryStorage();
     QVariantList rawSeries(int channelIndex, quint64 first, quint64 last, double windowStart, double duration, int width) const;
     QVariantList envelopeSeries(int channelIndex, quint64 first, quint64 last, quint64 groupSize, double windowStart, double duration, int width) const;
 
     std::array<std::vector<float>, ChannelCount> m_raw;
+    std::vector<quint64> m_validMasks;
     // Raw samples are level 0.  Cached aggregate levels begin at 4 samples.
     std::array<Level, 8> m_levels;
-    std::array<bool, ChannelCount> m_enabled {};
     quint64 m_nextSample = 0;
     quint64 m_historyCount = 0;
+    quint64 m_dataRevision = 0;
+    quint64 m_snapshotRevision = std::numeric_limits<quint64>::max();
+    quint32 m_cacheEpoch = 1;
     double m_originTime = 0.0;
     double m_sampleInterval = 1.0 / 5000.0;
+    double m_snapshotStart = 0.0, m_snapshotEnd = 0.0, m_snapshotRate = 0.0;
+    int m_snapshotWidth = 0;
+    std::vector<int> m_snapshotChannels;
     QVariantMap m_displaySnapshot;
 };
