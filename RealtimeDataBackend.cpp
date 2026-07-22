@@ -1,6 +1,7 @@
 #include "RealtimeDataBackend.h"
 
 #include <QtMath>
+#include <QRandomGenerator>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -19,6 +20,7 @@ RealtimeDataBackend::RealtimeDataBackend(QObject *parent) : QObject(parent), m_v
         for (auto &channel : level.channels)
             channel.resize(level.capacity);
     }
+    m_triggerPrevious.fill(std::numeric_limits<float>::quiet_NaN());
 }
 
 QVariantMap RealtimeDataBackend::displaySnapshot() const { return m_displaySnapshot; }
@@ -26,17 +28,61 @@ int RealtimeDataBackend::historyCount() const { return int(m_historyCount); }
 double RealtimeDataBackend::latestSampleTime() const { return m_historyCount ? timeAt(m_nextSample - 1) : 0.0; }
 double RealtimeDataBackend::historyStartTime() const { return m_historyCount ? timeAt(m_nextSample - m_historyCount) : 0.0; }
 
-float RealtimeDataBackend::valueFor(int channelIndex, double time) const
+float RealtimeDataBackend::valueFor(int channelIndex, quint64 sampleIndex) const
 {
     const int channelId = channelIndex + 1;
-    const double frequency = 125.0 + (channelId % 16) * 47.0;
-    const double amplitude = .55 + (channelId % 5) * .12;
-    const double phase = channelId * .37;
-    const double carrier = qSin(Tau * frequency * time + phase);
-    const double harmonic = .08 * qSin(Tau * frequency * 3.0 * time + phase + .4);
-    const double modulation = 1.0 + .12 * qSin(Tau * (.06 + channelId * .01) * time + phase);
-    const double noise = .012 * qSin((190 + channelId * 31) * time) + .006 * qSin((430 + channelId * 41) * time);
-    return float(amplitude * (modulation * (carrier + harmonic) + noise));
+    // Phase is derived exclusively from the shared sample clock.  The source
+    // time is m_originTime + sampleIndex / sampleRate, so batching, pausing
+    // and UI frame stalls cannot alter a channel's waveform phase.
+    const double time = timeAt(sampleIndex);
+    const double sampleRate = 1.0 / m_sampleInterval;
+    const double nyquist = sampleRate * .5;
+    const int type = channelIndex % 8;
+    const double requestedFrequency = 70.0 + (channelId % 11) * 43.0 + (channelId / 8) * 17.0;
+    // The dual-tone source reserves headroom for its second component.
+    const double maxFundamental = nyquist * (type == 3 ? .18 : .35);
+    const double frequency = std::min(requestedFrequency, std::max(1.0, maxFundamental));
+    const double amplitude = .35 + ((channelId * 3) % 7) * .09;
+    const double phase = channelId * .413;
+    const double offset = ((channelId * 5) % 7 - 3) * .08;
+    const double angle = Tau * frequency * time + phase;
+    const double cycle = frequency * time + phase / Tau;
+    const double unitCycle = cycle - std::floor(cycle);
+    double waveform = 0.0;
+
+    switch (type) {
+    case 0: // Square
+        waveform = qSin(angle) >= 0.0 ? 1.0 : -1.0;
+        break;
+    case 1: // Triangle
+        waveform = 4.0 / Tau * qAsin(qSin(angle));
+        break;
+    case 2: // Sawtooth
+        waveform = 2.0 * unitCycle - 1.0;
+        break;
+    case 3: { // Dual-tone sine, with both components safely below Nyquist.
+        const double secondFrequency = std::min(frequency * 1.73, nyquist * .42);
+        waveform = .68 * qSin(angle) + .32 * qSin(Tau * secondFrequency * time + phase * 1.7);
+        break;
+    }
+    case 4: // Sine with a deliberately visible DC offset.
+        waveform = qSin(angle);
+        break;
+    case 5: { // Sine plus deterministic small noise at the exact sample.
+        quint32 hash = quint32(sampleIndex) ^ (quint32(channelId) * 0x9e3779b9U);
+        hash ^= hash << 13; hash ^= hash >> 17; hash ^= hash << 5;
+        waveform = qSin(angle) + .055 * (double(hash & 0xffffU) / 32767.5 - 1.0);
+        break;
+    }
+    case 6: // Periodic pulse, duty cycle intentionally differs per channel.
+        waveform = unitCycle < (.12 + (channelId % 4) * .04) ? 1.0 : -.32;
+        break;
+    case 7: // Amplitude-modulated sine gives CH8 a distinct slow envelope.
+        waveform = (.42 + .58 * qSin(Tau * frequency * .11 * time + phase * .6)) * qSin(angle);
+        break;
+    }
+    const double dcOffset = type == 4 ? offset * 1.8 : offset;
+    return float(dcOffset + amplitude * waveform);
 }
 
 bool RealtimeDataBackend::isInHistory(quint64 index) const { return index >= m_nextSample - m_historyCount && index < m_nextSample; }
@@ -59,7 +105,10 @@ quint64 RealtimeDataBackend::firstSampleIndexAtOrAfter(double time) const
 quint64 RealtimeDataBackend::lastSampleIndexAtOrBefore(double time) const
 {
     const quint64 begin = m_nextSample - m_historyCount;
-    if (!m_historyCount || time < timeAt(begin)) return begin - 1;
+    // Never represent "before history" as begin - 1: when begin is zero that
+    // wraps to UINT64_MAX and can turn a first post-clear paint into an
+    // effectively endless raw/envelope loop.
+    if (!m_historyCount || time < timeAt(begin)) return begin;
     if (time >= latestSampleTime()) return m_nextSample - 1;
     return std::clamp<quint64>(quint64(std::floor((time - m_originTime) / m_sampleInterval + 1e-9)), begin, m_nextSample - 1);
 }
@@ -73,10 +122,25 @@ void RealtimeDataBackend::updateLevels(quint64 sampleIndex, int channelIndex, fl
         auto &bucket = level.channels[channelIndex][slot];
         if (bucket.epoch != m_cacheEpoch || bucket.group != group) {
             level.groups[slot] = group;
-            bucket = { value, value, sampleIndex, sampleIndex, group, m_cacheEpoch };
+            bucket = { value, value, sampleIndex, sampleIndex, group, m_cacheEpoch, false };
         } else {
-            if (value < bucket.minimum) { bucket.minimum = value; bucket.minIndex = sampleIndex; }
-            if (value > bucket.maximum) { bucket.maximum = value; bucket.maxIndex = sampleIndex; }
+            if (!std::isfinite(bucket.minimum) || value < bucket.minimum) { bucket.minimum = value; bucket.minIndex = sampleIndex; }
+            if (!std::isfinite(bucket.maximum) || value > bucket.maximum) { bucket.maximum = value; bucket.maxIndex = sampleIndex; }
+        }
+    }
+}
+
+void RealtimeDataBackend::markGapLevels(quint64 sampleIndex, int channelIndex)
+{
+    for (auto &level : m_levels) {
+        const quint64 group = sampleIndex / level.groupSize;
+        const quint64 slot = group % level.capacity;
+        auto &bucket = level.channels[channelIndex][slot];
+        if (bucket.epoch != m_cacheEpoch || bucket.group != group) {
+            level.groups[slot] = group;
+            bucket = { std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN(), sampleIndex, sampleIndex, group, m_cacheEpoch, true };
+        } else {
+            bucket.hasGap = true;
         }
     }
 }
@@ -105,16 +169,132 @@ void RealtimeDataBackend::appendSimulatedSamples(double startTime, double sample
         const quint64 index = m_nextSample++;
         const quint64 slot = index % Capacity;
         const double time = startTime + double(offset) * sampleInterval;
-        m_validMasks[slot] = enabledMask;
+        m_activeEvents.erase(std::remove_if(m_activeEvents.begin(), m_activeEvents.end(),
+            [index](const SimEvent &event) { return index >= event.start + event.duration; }), m_activeEvents.end());
+        scheduleEventIfDue(index, enabled, 1.0 / sampleInterval);
+        quint64 validMask = enabledMask;
         for (const int channel : enabled) {
-            const float value = valueFor(channel, time);
-            m_raw[channel][slot] = value;
-            updateLevels(index, channel, value);
+            bool valid = true;
+            const float value = applySimulationEvents(index, channel, valueFor(channel, index), &valid);
+            if (valid) {
+                m_raw[channel][slot] = value;
+                updateLevels(index, channel, value);
+                const float previous = m_triggerPrevious[channel];
+                // This deliberately observes the raw post-simulation sample only;
+                // it never consults the event list to create a trigger result.
+                if (std::isfinite(previous) && std::fabs(value - previous) >= 0.9f)
+                    emit rawTriggerDetected({{"channelId", channel + 1}, {"sampleIndex", qulonglong(index)}, {"previous", previous}, {"value", value}, {"delta", value - previous}});
+                m_triggerPrevious[channel] = value;
+            } else {
+                validMask &= ~(quint64(1) << channel);
+                markGapLevels(index, channel);
+                m_triggerPrevious[channel] = std::numeric_limits<float>::quiet_NaN();
+            }
         }
+        m_validMasks[slot] = validMask;
         m_historyCount = std::min<quint64>(Capacity, m_historyCount + 1);
     }
     ++m_dataRevision;
     emit historyChanged();
+}
+
+void RealtimeDataBackend::configureSimulationEvents(const QString &mode)
+{
+    const QString normalized = mode == QStringLiteral("automatic") ? mode : QStringLiteral("off");
+    if (m_eventMode == normalized)
+        return;
+    m_eventMode = normalized;
+    resetEventSchedule();
+}
+
+QVariantList RealtimeDataBackend::simulatedEvents() const { return m_eventHistory; }
+
+quint32 RealtimeDataBackend::nextRandom()
+{
+    quint32 state = m_eventState ? m_eventState : 12345;
+    state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+    return m_eventState = state;
+}
+
+QString RealtimeDataBackend::eventTypeName(SimEventType type)
+{
+    switch (type) {
+    case SimEventType::Spike: return QStringLiteral("spike");
+    case SimEventType::StepRecover: return QStringLiteral("step_recover");
+    case SimEventType::Pulse: return QStringLiteral("pulse");
+    case SimEventType::Dropout: return QStringLiteral("dropout");
+    case SimEventType::NoiseBurst: return QStringLiteral("noise_burst");
+    }
+    return QStringLiteral("unknown");
+}
+
+void RealtimeDataBackend::resetEventSchedule()
+{
+    // A fresh seed is deliberately chosen for every acquisition generation:
+    // this is a stochastic test source, rather than a replay fixture.
+    m_eventSeed = QRandomGenerator::global()->generate();
+    m_eventState = m_eventSeed ? m_eventSeed : 1;
+    m_nextEventSamples.fill(std::numeric_limits<quint64>::max());
+    m_nextEventId = 1;
+    m_activeEvents.clear();
+    m_eventHistory.clear();
+    m_triggerPrevious.fill(std::numeric_limits<float>::quiet_NaN());
+}
+
+void RealtimeDataBackend::scheduleEventIfDue(quint64 sampleIndex, const std::vector<int> &enabledChannels, double sampleRate)
+{
+    if (m_eventMode != QStringLiteral("automatic") || enabledChannels.empty()) return;
+    const quint64 rate = std::max<quint64>(1, quint64(std::llround(sampleRate)));
+    // Every enabled channel owns an independent next-event position.  Thus
+    // enabling eight channels does not create eight copies of the same event.
+    for (const int channel : enabledChannels) {
+        auto &next = m_nextEventSamples[channel];
+        if (next == std::numeric_limits<quint64>::max()) {
+            next = sampleIndex + rate * (1 + nextRandom() % 5);
+            continue;
+        }
+        if (sampleIndex != next) continue;
+        const auto type = static_cast<SimEventType>(nextRandom() % 5);
+        quint64 duration = 1;
+        switch (type) {
+        case SimEventType::Spike: duration = 1; break;
+        case SimEventType::StepRecover: duration = rate / 5 + nextRandom() % std::max<quint64>(1, rate / 5); break;
+        case SimEventType::Pulse: duration = std::max<quint64>(1, rate / 100 + nextRandom() % std::max<quint64>(1, rate / 25)); break;
+        case SimEventType::Dropout: duration = std::max<quint64>(1, rate / 50 + nextRandom() % std::max<quint64>(1, rate / 10)); break;
+        case SimEventType::NoiseBurst: duration = std::max<quint64>(1, rate / 20 + nextRandom() % std::max<quint64>(1, rate / 10)); break;
+        }
+        const float amplitude = .75f + float(nextRandom() % 125) / 100.f;
+        const quint64 id = m_nextEventId++;
+        const SimEvent event { id, type, channel, sampleIndex, duration, amplitude, m_eventSeed };
+        m_activeEvents.push_back(event);
+        QVariantMap detail {{"eventId", qulonglong(event.id)}, {"eventType", eventTypeName(event.type)}, {"channelId", event.channel + 1},
+            {"startSampleIndex", qulonglong(event.start)}, {"durationSamples", qulonglong(event.duration)}, {"amplitude", event.amplitude}, {"randomSeed", event.seed}};
+        m_eventHistory << detail;
+        if (m_eventHistory.size() > 256) m_eventHistory.removeFirst();
+        emit simulationEventOccurred(detail);
+        next = sampleIndex + duration + rate * (1 + nextRandom() % 5);
+    }
+}
+
+float RealtimeDataBackend::applySimulationEvents(quint64 sampleIndex, int channelIndex, float value, bool *valid) const
+{
+    for (const SimEvent &event : m_activeEvents) {
+        if (event.channel != channelIndex || sampleIndex < event.start || sampleIndex >= event.start + event.duration) continue;
+        const quint64 offset = sampleIndex - event.start;
+        switch (event.type) {
+        case SimEventType::Spike: if (offset == 0) value += event.amplitude; break;
+        case SimEventType::StepRecover: value += event.amplitude * (1.f - float(offset) / float(std::max<quint64>(1, event.duration))); break;
+        case SimEventType::Pulse: value += event.amplitude; break;
+        case SimEventType::Dropout: *valid = false; break;
+        case SimEventType::NoiseBurst: {
+            quint32 hash = event.seed ^ quint32(sampleIndex) ^ (quint32(channelIndex + 1) * 0x9e3779b9U);
+            hash ^= hash << 13; hash ^= hash >> 17; hash ^= hash << 5;
+            value += event.amplitude * (float(hash & 0xffffU) / 32767.5f - 1.f);
+            break;
+        }
+        }
+    }
+    return value;
 }
 
 QVariantList RealtimeDataBackend::rawSeries(int channel, quint64 first, quint64 last, double start, double duration, int width) const
@@ -124,7 +304,10 @@ QVariantList RealtimeDataBackend::rawSeries(int channel, quint64 first, quint64 
     values.reserve(int(std::min<quint64>((last - first + 1) * 2, 3ull * quint64(width))));
     for (quint64 index = first; index <= last; ++index) {
         const float value = valueAt(channel, index);
-        if (!std::isfinite(value)) continue;
+        if (!std::isfinite(value)) {
+            if (!values.isEmpty() && std::isfinite(values.last().toDouble())) values << std::numeric_limits<double>::quiet_NaN() << std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
         values << ((timeAt(index) - start) / duration * width) << value;
     }
     return values;
@@ -141,9 +324,15 @@ QVariantList RealtimeDataBackend::envelopeSeries(int channel, quint64 first, qui
     values.reserve(int(std::min<quint64>((lastGroup - firstGroup + 1) * 4, 4ull * quint64(width))));
     for (quint64 group = firstGroup; group <= lastGroup; ++group) {
         const auto slot = group % level.capacity;
-        if (level.groups[slot] != group) continue;
+        if (level.groups[slot] != group) {
+            if (!values.isEmpty() && std::isfinite(values.last().toDouble())) values << std::numeric_limits<double>::quiet_NaN() << std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
         const auto &bucket = level.channels[channel][slot];
-        if (bucket.epoch != m_cacheEpoch || bucket.group != group || !isInHistory(bucket.minIndex) || !isInHistory(bucket.maxIndex)) continue;
+        if (bucket.epoch != m_cacheEpoch || bucket.group != group || bucket.hasGap || !std::isfinite(bucket.minimum) || !std::isfinite(bucket.maximum) || !isInHistory(bucket.minIndex) || !isInHistory(bucket.maxIndex)) {
+            if (!values.isEmpty() && std::isfinite(values.last().toDouble())) values << std::numeric_limits<double>::quiet_NaN() << std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
         const auto append = [&](quint64 index, float value) { values << ((timeAt(index) - start) / duration * width) << value; };
         // Min/max are emitted in their true sample order, never as a synthetic zig-zag.
         if (bucket.minIndex <= bucket.maxIndex) { append(bucket.minIndex, bucket.minimum); append(bucket.maxIndex, bucket.maximum); }
@@ -170,12 +359,13 @@ void RealtimeDataBackend::refreshDisplaySnapshot(double windowStart, double wind
     const double duration = std::max(1e-12, windowEnd - windowStart);
     const int width = std::max(1, plotWidth);
     const double theoreticalSamplesPerPixel = sampleRate * duration / width;
-    const quint64 first = m_historyCount ? firstSampleIndexAtOrAfter(windowStart) : 0;
-    const quint64 last = m_historyCount ? lastSampleIndexAtOrBefore(windowEnd) : 0;
+    const bool overlapsHistory = m_historyCount && windowEnd >= historyStartTime() && windowStart <= latestSampleTime();
+    const quint64 first = overlapsHistory ? firstSampleIndexAtOrAfter(windowStart) : 0;
+    const quint64 last = overlapsHistory ? lastSampleIndexAtOrBefore(windowEnd) : 0;
     // The actual retained range is a safety bound during a rate-generation
     // transition.  Never select the raw path merely because a caller supplied
     // a lower new rate while old high-rate samples are still present.
-    const double actualSamplesPerPixel = m_historyCount && last >= first ? double(last - first + 1) / width : 0.0;
+    const double actualSamplesPerPixel = overlapsHistory && last >= first ? double(last - first + 1) / width : 0.0;
     const double samplesPerPixel = std::max(theoreticalSamplesPerPixel, actualSamplesPerPixel);
     const bool envelope = samplesPerPixel >= 2.0;
     quint64 groupSize = 1;
@@ -186,14 +376,14 @@ void RealtimeDataBackend::refreshDisplaySnapshot(double windowStart, double wind
     for (const int channel : requestedChannels) {
         QVariantMap series;
         series.insert("channelIndex", channel);
-        series.insert("points", m_historyCount ? (envelope ? envelopeSeries(channel, first, last, groupSize, windowStart, duration, width)
-                                                   : rawSeries(channel, first, last, windowStart, duration, width)) : QVariantList{});
+        series.insert("points", overlapsHistory ? (envelope ? envelopeSeries(channel, first, last, groupSize, windowStart, duration, width)
+                                                      : rawSeries(channel, first, last, windowStart, duration, width)) : QVariantList{});
         channels << series;
     }
     QVariantMap snapshot;
     snapshot.insert("windowStart", windowStart); snapshot.insert("windowEnd", windowEnd);
     snapshot.insert("samplesPerPixel", samplesPerPixel); snapshot.insert("mode", envelope ? "envelope" : "raw");
-    snapshot.insert("channels", channels); snapshot.insert("sampleCount", m_historyCount && last >= first ? double(last - first + 1) : 0.0);
+    snapshot.insert("channels", channels); snapshot.insert("sampleCount", overlapsHistory && last >= first ? double(last - first + 1) : 0.0);
     m_displaySnapshot = snapshot;
     m_snapshotRevision = m_dataRevision;
     m_snapshotStart = windowStart; m_snapshotEnd = windowEnd; m_snapshotRate = sampleRate;
@@ -224,6 +414,7 @@ void RealtimeDataBackend::resetHistoryStorage()
     m_nextSample = 0; m_historyCount = 0; m_originTime = 0.0; m_displaySnapshot.clear(); ++m_dataRevision;
     m_snapshotRevision = std::numeric_limits<quint64>::max();
     ++m_cacheEpoch;
+    resetEventSchedule();
     // Epoch invalidation makes clear O(1): the old fixed-capacity raw and
     // aggregate arrays are ignored until their slots are overwritten.
     if (m_cacheEpoch == 0) {

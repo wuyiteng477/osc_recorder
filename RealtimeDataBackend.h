@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QString>
 #include <QtQmlIntegration/qqmlintegration.h>
 #include <array>
 #include <limits>
@@ -27,6 +28,8 @@ public:
     double latestSampleTime() const;
 
     Q_INVOKABLE void appendSimulatedSamples(double startTime, double sampleInterval, int count, const QVariantList &enabledChannels);
+    Q_INVOKABLE void configureSimulationEvents(const QString &mode);
+    Q_INVOKABLE QVariantList simulatedEvents() const;
     Q_INVOKABLE void clearHistory();
     Q_INVOKABLE void refreshDisplaySnapshot(double windowStart, double windowEnd, double sampleRate, int plotWidth, const QVariantList &visibleChannels);
     Q_INVOKABLE double zeroCrossingFrequency(int channelIndex, double endTime, double durationSeconds) const;
@@ -35,21 +38,31 @@ public:
 signals:
     void historyChanged();
     void displaySnapshotChanged();
+    void simulationEventOccurred(const QVariantMap &event);
+    void rawTriggerDetected(const QVariantMap &trigger);
 
 private:
     static constexpr int ChannelCount = 64;
     static constexpr quint64 Capacity = 262144;
-    struct Bucket { float minimum = 0.f; float maximum = 0.f; quint64 minIndex = 0; quint64 maxIndex = 0; quint64 group = std::numeric_limits<quint64>::max(); quint32 epoch = 0; };
+    struct Bucket { float minimum = 0.f; float maximum = 0.f; quint64 minIndex = 0; quint64 maxIndex = 0; quint64 group = std::numeric_limits<quint64>::max(); quint32 epoch = 0; bool hasGap = false; };
     struct Level { quint64 groupSize = 1; quint64 capacity = 0; std::vector<quint64> groups; std::array<std::vector<Bucket>, ChannelCount> channels; };
+    enum class SimEventType { Spike, StepRecover, Pulse, Dropout, NoiseBurst };
+    struct SimEvent { quint64 id = 0; SimEventType type = SimEventType::Spike; int channel = -1; quint64 start = 0; quint64 duration = 1; float amplitude = 0.f; quint32 seed = 0; };
 
-    float valueFor(int channelIndex, double time) const;
+    float valueFor(int channelIndex, quint64 sampleIndex) const;
     quint64 firstSampleIndexAtOrAfter(double time) const;
     quint64 lastSampleIndexAtOrBefore(double time) const;
     bool isInHistory(quint64 sampleIndex) const;
     float valueAt(int channelIndex, quint64 sampleIndex) const;
     double timeAt(quint64 sampleIndex) const;
     void updateLevels(quint64 sampleIndex, int channelIndex, float value);
+    void markGapLevels(quint64 sampleIndex, int channelIndex);
     void resetHistoryStorage();
+    void resetEventSchedule();
+    quint32 nextRandom();
+    void scheduleEventIfDue(quint64 sampleIndex, const std::vector<int> &enabledChannels, double sampleRate);
+    float applySimulationEvents(quint64 sampleIndex, int channelIndex, float value, bool *valid) const;
+    static QString eventTypeName(SimEventType type);
     QVariantList rawSeries(int channelIndex, quint64 first, quint64 last, double windowStart, double duration, int width) const;
     QVariantList envelopeSeries(int channelIndex, quint64 first, quint64 last, quint64 groupSize, double windowStart, double duration, int width) const;
 
@@ -68,4 +81,12 @@ private:
     int m_snapshotWidth = 0;
     std::vector<int> m_snapshotChannels;
     QVariantMap m_displaySnapshot;
+    QString m_eventMode = QStringLiteral("off");
+    quint32 m_eventSeed = 12345;
+    quint32 m_eventState = 12345;
+    std::array<quint64, ChannelCount> m_nextEventSamples {};
+    quint64 m_nextEventId = 1;
+    std::vector<SimEvent> m_activeEvents;
+    QVariantList m_eventHistory;
+    std::array<float, ChannelCount> m_triggerPrevious {};
 };

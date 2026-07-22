@@ -19,6 +19,7 @@ Rectangle {
     property var draftChannels: []
     property var draftBoardRates: []
     property int draftSimulationStressRate: 5000
+    property string draftSimulationEventMode: "off"
     property string validationMessage: ""
     readonly property int draftChannelCount: draftChannels.filter(value => value).length
     readonly property real estimatedThroughput: {
@@ -47,6 +48,7 @@ Rectangle {
         draftChannels = acquisitionConfig.channelEnabled.slice()
         draftBoardRates = acquisitionConfig.boardSampleRates.slice()
         draftSimulationStressRate = acquisitionConfig.simulationStressRate
+        draftSimulationEventMode = acquisitionConfig.simulationEventMode || "off"
         validationMessage = ""
     }
 
@@ -57,7 +59,8 @@ Rectangle {
             boardEnabled: draftBoards.slice(),
             channelEnabled: draftChannels.slice(),
             boardSampleRates: draftBoardRates.slice(),
-            simulationStressRate: draftSimulationStressRate
+            simulationStressRate: draftSimulationStressRate,
+            simulationEventMode: draftSimulationEventMode
         }
     }
     function stageOrApply() {
@@ -112,12 +115,6 @@ Rectangle {
         ColumnLayout {
             width: parent.width; anchors.margins: 24; spacing: 14
             Label { text: qsTr("采集设置"); color: "#d9e4ec"; font.pixelSize: 22; font.bold: true }
-            Label {
-                text: qsTr("硬件采样率按板卡能力表选择，单个通道可独立启用。模拟压力档只控制模拟数据生成，绝不代表真实板卡能力；显示刷新固定为 ")
-                    + root.capabilityBackend.displayRefreshRate + qsTr(" FPS，time/div 仅改变可见时间窗。")
-                color: "#8fa3b4"; wrapMode: Text.WordWrap; Layout.fillWidth: true
-            }
-
             Rectangle {
                 Layout.fillWidth: true; implicitHeight: 98; radius: 5
                 color: root.simulationRunning ? "#302822" : "#182b38"; border.color: root.simulationRunning ? "#e8a94b" : "#365467"
@@ -125,7 +122,7 @@ Rectangle {
                     anchors.fill: parent; anchors.margins: 12; spacing: 14
                     ColumnLayout {
                         spacing: 3
-                        Label { text: qsTr("模拟压力测试采样率（仅模拟）"); color: "#d9e4ec"; font.pixelSize: 14 }
+                        Label { text: qsTr("模拟压力测试采样率"); color: "#d9e4ec"; font.pixelSize: 14 }
                         ComboBox {
                             id: stressRateBox; Layout.preferredWidth: 210
                             model: root.capabilityBackend.simulationStressRates
@@ -155,6 +152,20 @@ Rectangle {
                         visible: root.simulationRunning; text: qsTr("停止并应用"); primary: true; implicitHeight: 36
                         onClicked: root.stopAndApplyRequested(root.draftConfig())
                     }
+                }
+            }
+            Rectangle {
+                Layout.fillWidth: true; implicitHeight: 52; radius: 5; color: "#14232e"; border.color: "#30495a"
+                RowLayout {
+                    anchors.fill: parent; anchors.margins: 10; spacing: 12
+                    Label { text: qsTr("模拟测试事件"); color: "#d9e4ec"; font.bold: true }
+                    ComboBox {
+                        id: eventModeBox; Layout.preferredWidth: 150
+                        model: [qsTr("关闭"), qsTr("自动随机")]
+                        currentIndex: root.draftSimulationEventMode === "automatic" ? 1 : 0
+                        onActivated: { root.draftSimulationEventMode = currentIndex === 1 ? "automatic" : "off"; root.stageOrApply() }
+                    }
+                    Item { Layout.fillWidth: true }
                 }
             }
             Label { visible: root.simulationRunning; text: qsTr("采集运行中：当前硬件采样率保持锁定；页面修改仅暂存，需“停止并应用”后生效。"); color: "#e8a94b"; Layout.fillWidth: true; wrapMode: Text.WordWrap }

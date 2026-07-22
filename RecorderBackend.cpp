@@ -11,6 +11,8 @@
 #include <QStorageInfo>
 #include <QStringList>
 #include <QtMath>
+#include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr qint64 SafetyMargin = 10LL * 1024 * 1024;
@@ -121,17 +123,36 @@ bool RecorderBackend::writeBlock(const Block &block)
     for (quint32 sample = 0; sample < block.count; ++sample) {
         const double time = block.startTime + double(sample) / m_sampleRate;
         for (int channel : m_channelIds) {
-            // Mirror ChannelStore.valueFor(): recording must contain the same
-            // simulated sample values currently shown by the real-time view.
+            // Mirror RealtimeDataBackend::valueFor(): the recorder follows the
+            // same shared sample clock and per-channel base-waveform family.
             const int channelId = channel + 1;
-            const double frequency = 125.0 + (channelId % 16) * 47.0;
-            const double amplitude = .55 + (channelId % 5) * .12;
-            const double phase = channelId * .37;
-            const double carrier = qSin(Tau * frequency * time + phase);
-            const double harmonic = .08 * qSin(Tau * frequency * 3.0 * time + phase + .4);
-            const double modulation = 1.0 + .12 * qSin(Tau * (.06 + channelId * .01) * time + phase);
-            const double noise = .012 * qSin((190 + channelId * 31) * time) + .006 * qSin((430 + channelId * 41) * time);
-            samples << float(amplitude * (modulation * (carrier + harmonic) + noise));
+            const int type = channel % 8;
+            const double nyquist = m_sampleRate * .5;
+            const double requestedFrequency = 70.0 + (channelId % 11) * 43.0 + (channelId / 8) * 17.0;
+            const double frequency = std::min(requestedFrequency, std::max(1.0, nyquist * (type == 3 ? .18 : .35)));
+            const double amplitude = .35 + ((channelId * 3) % 7) * .09;
+            const double phase = channelId * .413;
+            const double offset = ((channelId * 5) % 7 - 3) * .08;
+            const double angle = Tau * frequency * time + phase;
+            const double cycle = frequency * time + phase / Tau;
+            const double unitCycle = cycle - std::floor(cycle);
+            double waveform = 0.0;
+            switch (type) {
+            case 0: waveform = qSin(angle) >= 0.0 ? 1.0 : -1.0; break;
+            case 1: waveform = 4.0 / Tau * qAsin(qSin(angle)); break;
+            case 2: waveform = 2.0 * unitCycle - 1.0; break;
+            case 3: waveform = .68 * qSin(angle) + .32 * qSin(Tau * std::min(frequency * 1.73, nyquist * .42) * time + phase * 1.7); break;
+            case 4: waveform = qSin(angle); break;
+            case 5: {
+                quint32 hash = quint32(block.firstSample + sample) ^ (quint32(channelId) * 0x9e3779b9U);
+                hash ^= hash << 13; hash ^= hash >> 17; hash ^= hash << 5;
+                waveform = qSin(angle) + .055 * (double(hash & 0xffffU) / 32767.5 - 1.0);
+                break;
+            }
+            case 6: waveform = unitCycle < (.12 + (channelId % 4) * .04) ? 1.0 : -.32; break;
+            case 7: waveform = (.42 + .58 * qSin(Tau * frequency * .11 * time + phase * .6)) * qSin(angle); break;
+            }
+            samples << float((type == 4 ? offset * 1.8 : offset) + amplitude * waveform);
         }
     }
     if (samples.status() != QDataStream::Ok) return false;

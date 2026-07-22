@@ -34,7 +34,8 @@ ApplicationWindow {
         boardEnabled: [true, false, false, false, false, false, false, false],
         channelEnabled: [true].concat(new Array(63).fill(false)),
         boardSampleRates: [5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000],
-        simulationStressRate: 5000
+        simulationStressRate: 5000,
+        simulationEventMode: "off"
     })
 
     property int acquisitionConfigRevision: 0
@@ -66,7 +67,18 @@ ApplicationWindow {
     readonly property real historyStartTime: realtimeData.historyStartTime
     ChannelStore { id: dataStore }
     AcquisitionBackend { id: acquisitionBackend }
-    RealtimeDataBackend { id: realtimeData }
+    RealtimeDataBackend {
+        id: realtimeData
+        onSimulationEventOccurred: event => window.appendLog(
+            "\u6a21\u62df\u4e8b\u4ef6 #" + event.eventId + " " + event.eventType + "\uff1aCH" + event.channelId
+                + "\uff0c\u6837\u672c " + event.startSampleIndex + "\uff0c\u6301\u7eed " + event.durationSamples + " \u70b9\uff0c\u5e45\u503c " + event.amplitude + "\uff0c\u79cd\u5b50 " + event.randomSeed,
+            "Simulation event #" + event.eventId + " " + event.eventType + ": CH" + event.channelId
+                + ", sample " + event.startSampleIndex + ", " + event.durationSamples + " samples, amplitude " + event.amplitude + ", seed " + event.randomSeed)
+        // Raw trigger detection remains in C++ and observes only samples.
+        // It is intentionally not written to the normal event log: square
+        // and pulse base waves naturally cross a large delta threshold and
+        // would otherwise be mistaken for simulated random events.
+    }
     SystemInfoBackend { id: systemInfo }
     RecorderBackend {
         id: recorderBackend
@@ -224,6 +236,8 @@ ApplicationWindow {
         }
         if (!acquisitionBackend.supportsSimulationStressRate(config.simulationStressRate))
             return "模拟压力测试采样率不在后端允许档位中。"
+        if (config.simulationEventMode !== undefined && config.simulationEventMode !== "off" && config.simulationEventMode !== "automatic")
+            return "模拟事件模式无效。"
 
         return ""
     }
@@ -256,8 +270,10 @@ ApplicationWindow {
             boardEnabled: config.boardEnabled.slice(),
             channelEnabled: config.channelEnabled.slice(),
             boardSampleRates: config.boardSampleRates.slice(),
-            simulationStressRate: config.simulationStressRate
+            simulationStressRate: config.simulationStressRate,
+            simulationEventMode: config.simulationEventMode || "off"
         }
+        realtimeData.configureSimulationEvents(acquisitionConfig.simulationEventMode)
         systemInfo.writeConfiguration(acquisitionConfig)
         ++acquisitionConfigRevision
         // Board selection is a sampling gate as well as a UI choice.  A channel
@@ -297,7 +313,8 @@ ApplicationWindow {
             boardEnabled: acquisitionConfig.boardEnabled.slice(),
             channelEnabled: acquisitionConfig.channelEnabled.slice(),
             boardSampleRates: acquisitionConfig.boardSampleRates.slice(),
-            simulationStressRate: acquisitionConfig.simulationStressRate
+            simulationStressRate: acquisitionConfig.simulationStressRate,
+            simulationEventMode: acquisitionConfig.simulationEventMode
         }
         next.channelEnabled[index] = enabled
         if (enabled)
