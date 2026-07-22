@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QString>
 #include <QVariantMap>
+#include <QHash>
 #include <QtQmlIntegration/qqmlintegration.h>
 
 // Cross-platform application diagnostics.  Hardware-specific RK3588 probes
@@ -34,4 +35,5 @@ signals:
 private:
     void ensureDirectories() const;
     QString m_configPath, m_logDirectory, m_logFile;
+    QHash<QString, qint64> m_recentLogTimes;
 };

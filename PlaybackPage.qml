@@ -113,11 +113,11 @@ Rectangle {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 20
+        anchors.margins: 24
         spacing: 10
         RowLayout {
             Layout.fillWidth: true
-            Label { text: qsTr("\u5386\u53f2\u56de\u653e"); color: "#d9e4ec"; font.pixelSize: 21; font.bold: true }
+            Label { text: qsTr("\u5386\u53f2\u56de\u653e"); color: "#d9e4ec"; font.pixelSize: 22; font.bold: true }
             Item { Layout.fillWidth: true }
             Label { text: playback.status === "ready" ? qsTr("\u6821\u9a8c\u5b8c\u6210") : playback.status === "error" ? qsTr("\u6587\u4ef6\u9519\u8bef") : qsTr("\u672a\u52a0\u8f7d"); color: playback.status === "ready" ? "#35d19b" : playback.status === "error" ? "#f07d72" : "#8fa3b4"; font.bold: true }
         }

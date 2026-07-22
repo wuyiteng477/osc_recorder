@@ -148,6 +148,9 @@ void RealtimeDataBackend::markGapLevels(quint64 sampleIndex, int channelIndex)
 void RealtimeDataBackend::appendSimulatedSamples(double startTime, double sampleInterval, int count, const QVariantList &enabledChannels)
 {
     if (count <= 0 || sampleInterval <= 0.0) return;
+    // Single-trigger display capture owns this fixed history generation until
+    // the user re-arms. Main.qml still advances acquisition and recording.
+    if (m_displayHistoryFrozen) return;
     // A fixed-dt ring and its min/max hierarchy cannot safely mix rates.
     // Switch generations before the first new-rate sample rather than
     // interpreting old timestamps with the new rate.
@@ -185,10 +188,12 @@ void RealtimeDataBackend::appendSimulatedSamples(double startTime, double sample
                 if (std::isfinite(previous) && std::fabs(value - previous) >= 0.9f)
                     emit rawTriggerDetected({{"channelId", channel + 1}, {"sampleIndex", qulonglong(index)}, {"previous", previous}, {"value", value}, {"delta", value - previous}});
                 m_triggerPrevious[channel] = value;
+                evaluateEdgeTrigger(index, channel, value, true);
             } else {
                 validMask &= ~(quint64(1) << channel);
                 markGapLevels(index, channel);
                 m_triggerPrevious[channel] = std::numeric_limits<float>::quiet_NaN();
+                evaluateEdgeTrigger(index, channel, value, false);
             }
         }
         m_validMasks[slot] = validMask;
@@ -205,6 +210,79 @@ void RealtimeDataBackend::configureSimulationEvents(const QString &mode)
         return;
     m_eventMode = normalized;
     resetEventSchedule();
+}
+
+void RealtimeDataBackend::configureEdgeTrigger(int channelIndex, const QString &edge, double level, double hysteresis, const QString &mode)
+{
+    const int boundedChannel = std::clamp(channelIndex, 0, ChannelCount - 1);
+    const QString normalizedEdge = (edge == QStringLiteral("falling") || edge == QStringLiteral("both")) ? edge : QStringLiteral("rising");
+    const QString normalizedMode = mode == QStringLiteral("off") ? mode
+        : (mode == QStringLiteral("normal") || mode == QStringLiteral("single")) ? mode : QStringLiteral("auto");
+    const float boundedHysteresis = float(std::clamp(hysteresis, .001, 10.0));
+    if (m_edgeTriggerChannel == boundedChannel && m_edgeTriggerEdge == normalizedEdge && m_edgeTriggerMode == normalizedMode
+        && qFuzzyCompare(m_edgeTriggerLevel, float(level)) && qFuzzyCompare(m_edgeTriggerHysteresis, boundedHysteresis))
+        return;
+    m_edgeTriggerChannel = boundedChannel;
+    m_edgeTriggerEdge = normalizedEdge;
+    m_edgeTriggerMode = normalizedMode;
+    m_edgeTriggerLevel = float(level);
+    m_edgeTriggerHysteresis = boundedHysteresis;
+    rearmEdgeTrigger();
+}
+
+void RealtimeDataBackend::rearmEdgeTrigger()
+{
+    m_edgeTriggerPrevious = std::numeric_limits<float>::quiet_NaN();
+    m_edgeTriggerArmed = true;
+    m_singleTriggerCaptured = false;
+}
+
+void RealtimeDataBackend::setDisplayHistoryFrozen(bool frozen)
+{
+    if (m_displayHistoryFrozen == frozen) return;
+    m_displayHistoryFrozen = frozen;
+    if (!frozen) {
+        // Resuming begins a clean time/cache generation. This prevents new
+        // data from overwriting a frozen circular capture with mismatched
+        // timestamps while keeping the frozen range intact until re-arm.
+        resetHistoryStorage();
+        emit historyChanged();
+        emit displaySnapshotChanged();
+    }
+}
+
+void RealtimeDataBackend::evaluateEdgeTrigger(quint64 sampleIndex, int channelIndex, float value, bool valid)
+{
+    if (m_edgeTriggerMode == QStringLiteral("off")) return;
+    if (channelIndex != m_edgeTriggerChannel) return;
+    if (!valid || !std::isfinite(value)) {
+        // A gap is a hard discontinuity: never form an edge by comparing the
+        // point before it with the first point after it.
+        m_edgeTriggerPrevious = std::numeric_limits<float>::quiet_NaN();
+        m_edgeTriggerArmed = true;
+        return;
+    }
+    const float halfHysteresis = m_edgeTriggerHysteresis * .5f;
+    const float lower = m_edgeTriggerLevel - halfHysteresis;
+    const float upper = m_edgeTriggerLevel + halfHysteresis;
+    if (m_edgeTriggerEdge == QStringLiteral("rising")) {
+        if (value <= lower) m_edgeTriggerArmed = true;
+    } else if (m_edgeTriggerEdge == QStringLiteral("falling")) {
+        if (value >= upper) m_edgeTriggerArmed = true;
+    } else if (value <= lower || value >= upper) {
+        m_edgeTriggerArmed = true;
+    }
+    const float previous = m_edgeTriggerPrevious;
+    const bool risingCrossed = previous < upper && value >= upper;
+    const bool fallingCrossed = previous > lower && value <= lower;
+    const bool crossed = std::isfinite(previous) && m_edgeTriggerArmed
+        && (m_edgeTriggerEdge == QStringLiteral("rising") ? risingCrossed : m_edgeTriggerEdge == QStringLiteral("falling") ? fallingCrossed : (risingCrossed || fallingCrossed));
+    m_edgeTriggerPrevious = value;
+    if (!crossed || (m_edgeTriggerMode == QStringLiteral("single") && m_singleTriggerCaptured)) return;
+    m_edgeTriggerArmed = false;
+    if (m_edgeTriggerMode == QStringLiteral("single")) m_singleTriggerCaptured = true;
+    emit edgeTriggerDetected({{"triggerSampleIndex", qulonglong(sampleIndex)}, {"timeSeconds", timeAt(sampleIndex)}, {"channelId", channelIndex + 1},
+        {"edge", m_edgeTriggerEdge}, {"level", m_edgeTriggerLevel}, {"hysteresis", m_edgeTriggerHysteresis}, {"mode", m_edgeTriggerMode}});
 }
 
 QVariantList RealtimeDataBackend::simulatedEvents() const { return m_eventHistory; }
@@ -411,10 +489,12 @@ QVariantMap RealtimeDataBackend::channelRange(int channel, double start, double 
 
 void RealtimeDataBackend::resetHistoryStorage()
 {
+    m_displayHistoryFrozen = false;
     m_nextSample = 0; m_historyCount = 0; m_originTime = 0.0; m_displaySnapshot.clear(); ++m_dataRevision;
     m_snapshotRevision = std::numeric_limits<quint64>::max();
     ++m_cacheEpoch;
     resetEventSchedule();
+    rearmEdgeTrigger();
     // Epoch invalidation makes clear O(1): the old fixed-capacity raw and
     // aggregate arrays are ignored until their slots are overwritten.
     if (m_cacheEpoch == 0) {

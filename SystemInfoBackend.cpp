@@ -1,4 +1,5 @@
 #include "SystemInfoBackend.h"
+#include "AsyncLogWriter.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -19,6 +20,9 @@ SystemInfoBackend::SystemInfoBackend(QObject *parent) : QObject(parent)
     m_logDirectory = QDir(dataDirectory).filePath("logs");
     m_logFile = QDir(m_logDirectory).filePath("application.log");
     ensureDirectories();
+    // Cleanup is queued before normal application activity begins.  It keeps
+    // the log folder bounded without delaying the GUI startup path.
+    AsyncLogWriter::cleanupGlobalDirectory(m_logDirectory);
 }
 
 void SystemInfoBackend::ensureDirectories() const { QDir().mkpath(QFileInfo(m_configPath).absolutePath()); QDir().mkpath(m_logDirectory); }
@@ -33,9 +37,14 @@ QString SystemInfoBackend::logFilePath() const { return m_logFile; }
 void SystemInfoBackend::appendLog(const QString &line)
 {
     ensureDirectories();
-    QFile file(m_logFile);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
-        file.write((QDateTime::currentDateTime().toString(Qt::ISODateWithMs) + " " + line + "\n").toUtf8());
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 previous = m_recentLogTimes.value(line, 0);
+    // Suppress identical high-frequency messages while keeping state changes
+    // and errors intact.  The UI still receives the original user action log.
+    if (previous && now - previous < 1000) return;
+    m_recentLogTimes.insert(line, now);
+    if (m_recentLogTimes.size() > 256) m_recentLogTimes.clear();
+    AsyncLogWriter::appendGlobal(m_logFile, QDateTime::currentDateTime().toString(Qt::ISODateWithMs) + " " + line);
 }
 
 void SystemInfoBackend::writeConfiguration(const QVariantMap &configuration)

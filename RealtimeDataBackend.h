@@ -30,6 +30,9 @@ public:
     Q_INVOKABLE void appendSimulatedSamples(double startTime, double sampleInterval, int count, const QVariantList &enabledChannels);
     Q_INVOKABLE void configureSimulationEvents(const QString &mode);
     Q_INVOKABLE QVariantList simulatedEvents() const;
+    Q_INVOKABLE void configureEdgeTrigger(int channelIndex, const QString &edge, double level, double hysteresis, const QString &mode);
+    Q_INVOKABLE void rearmEdgeTrigger();
+    Q_INVOKABLE void setDisplayHistoryFrozen(bool frozen);
     Q_INVOKABLE void clearHistory();
     Q_INVOKABLE void refreshDisplaySnapshot(double windowStart, double windowEnd, double sampleRate, int plotWidth, const QVariantList &visibleChannels);
     Q_INVOKABLE double zeroCrossingFrequency(int channelIndex, double endTime, double durationSeconds) const;
@@ -40,6 +43,7 @@ signals:
     void displaySnapshotChanged();
     void simulationEventOccurred(const QVariantMap &event);
     void rawTriggerDetected(const QVariantMap &trigger);
+    void edgeTriggerDetected(const QVariantMap &trigger);
 
 private:
     static constexpr int ChannelCount = 64;
@@ -59,6 +63,7 @@ private:
     void markGapLevels(quint64 sampleIndex, int channelIndex);
     void resetHistoryStorage();
     void resetEventSchedule();
+    void evaluateEdgeTrigger(quint64 sampleIndex, int channelIndex, float value, bool valid);
     quint32 nextRandom();
     void scheduleEventIfDue(quint64 sampleIndex, const std::vector<int> &enabledChannels, double sampleRate);
     float applySimulationEvents(quint64 sampleIndex, int channelIndex, float value, bool *valid) const;
@@ -89,4 +94,13 @@ private:
     std::vector<SimEvent> m_activeEvents;
     QVariantList m_eventHistory;
     std::array<float, ChannelCount> m_triggerPrevious {};
+    int m_edgeTriggerChannel = 0;
+    QString m_edgeTriggerEdge = QStringLiteral("rising");
+    QString m_edgeTriggerMode = QStringLiteral("auto");
+    float m_edgeTriggerLevel = 0.f;
+    float m_edgeTriggerHysteresis = .1f;
+    float m_edgeTriggerPrevious = std::numeric_limits<float>::quiet_NaN();
+    bool m_edgeTriggerArmed = true;
+    bool m_singleTriggerCaptured = false;
+    bool m_displayHistoryFrozen = false;
 };

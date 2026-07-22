@@ -1,4 +1,5 @@
 #include "RecorderBackend.h"
+#include "AsyncLogWriter.h"
 
 #include <QDataStream>
 #include <QDateTime>
@@ -88,7 +89,7 @@ bool RecorderBackend::startRecording(int sampleRate, const QVariantList &channel
     m_dataFile.setFileName(QDir(m_sessionDirectory).filePath(m_currentFileName));
     m_indexFile.setFileName(QDir(m_sessionDirectory).filePath("index.csv"));
     m_logFile.setFileName(QDir(m_sessionDirectory).filePath("recording.log"));
-    if (!m_dataFile.open(QIODevice::WriteOnly) || !m_indexFile.open(QIODevice::WriteOnly | QIODevice::Text) || !m_logFile.open(QIODevice::WriteOnly | QIODevice::Text)) { setStatus("write_error", tr("无法创建录制文件。")); return false; }
+    if (!m_dataFile.open(QIODevice::WriteOnly) || !m_indexFile.open(QIODevice::WriteOnly | QIODevice::Text)) { writeLog("ERROR recording file creation failed"); setStatus("write_error", tr("无法创建录制文件。")); return false; }
     QDataStream header(&m_dataFile); header.setByteOrder(QDataStream::LittleEndian);
     header << FileMagic << quint32(2) << qint64(QDateTime::currentMSecsSinceEpoch()) << qint32(m_sampleRate) << qint32(m_channelIds.size());
     for (int id : m_channelIds) header << qint32(id);
@@ -198,7 +199,11 @@ bool RecorderBackend::validateIndex(QString *reason)
     return true;
 }
 
-void RecorderBackend::writeLog(const QString &line) { if (m_logFile.isOpen()) { m_logFile.write(QDateTime::currentDateTime().toString(Qt::ISODate).toUtf8() + " " + line.toUtf8() + '\n'); m_logFile.flush(); } }
+void RecorderBackend::writeLog(const QString &line)
+{
+    if (m_logFile.fileName().isEmpty()) return;
+    AsyncLogWriter::appendRecording(m_logFile.fileName(), QDateTime::currentDateTime().toString(Qt::ISODateWithMs) + " " + line);
+}
 
 void RecorderBackend::writeSessionMetadata()
 {
@@ -219,13 +224,17 @@ void RecorderBackend::stopRecording()
     while (!m_pendingBlocks.isEmpty()) { const Block block = m_pendingBlocks.takeFirst(); if (!writeBlock(block)) { writeLog("ERROR stop flush failed"); setStatus("write_error", tr("停止时写入失败。")); return; } }
     m_recordedMilliseconds = m_recordingClock.elapsed(); m_simulatedFileBytes = m_dataFile.size(); m_dataFile.flush(); m_indexFile.flush(); m_dataFile.close(); m_indexFile.close(); QString reason;
     if (!validateIndex(&reason)) { writeLog("ERROR index validation failed: " + reason); setStatus("write_error", reason); return; }
-    writeLog("sealed waveform.part after index validation"); m_logFile.close();
+    writeLog("sealed waveform.part after index validation");
+    // The session directory is renamed below; drain its short, state-only log
+    // before changing the path so no queued entries are stranded.
+    AsyncLogWriter::flushRecording(m_logFile.fileName());
     const QString partPath = QDir(m_sessionDirectory).filePath("waveform.part"), dataPath = QDir(m_sessionDirectory).filePath("waveform.bin");
     if (!QFile::rename(partPath, dataPath)) { setStatus("write_error", tr("无法封存 .part 数据文件。")); return; }
     m_currentFileName = "waveform.bin"; m_finishedAt = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
     const QString finalDirectory = QDir(m_saveDirectory).filePath("recording_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz"));
     if (QDir(m_saveDirectory).rename(QFileInfo(m_temporarySessionDirectory).fileName(), QFileInfo(finalDirectory).fileName())) m_sessionDirectory = finalDirectory;
     m_logFile.setFileName(QDir(m_sessionDirectory).filePath("recording.log"));
-    if (m_logFile.open(QIODevice::WriteOnly | QIODevice::Append)) { writeLog("waveform.part validation completed; renamed waveform.part to waveform.bin"); m_logFile.close(); }
+    writeLog("waveform.part validation completed; renamed waveform.part to waveform.bin");
+    AsyncLogWriter::flushRecording(m_logFile.fileName());
     setStatus("completed"); writeSessionMetadata(); refreshStorage(); emit eventLogged(tr("模拟录制已完成。"), "INFO");
 }

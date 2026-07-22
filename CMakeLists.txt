@@ -30,6 +30,8 @@ qt_add_qml_module(apposc_recorder
   RealtimeDataBackend.h
   SystemInfoBackend.cpp
   SystemInfoBackend.h
+  AsyncLogWriter.cpp
+  AsyncLogWriter.h
   PlaybackBackend.cpp
   PlaybackBackend.h
     QML_FILES

@@ -11,6 +11,8 @@ Rectangle {
     signal channelVisibleRequested(int index, bool visible)
     signal channelColorRequested(int index, string color)
     color: "#101922"
+    clip: true
+    readonly property bool compactLayout: width < 780
 
     // 仅管理页面内的展开状态，不影响采集逻辑。
     property var expandedBoards: [true, false, false, false, false, false, false, false]
@@ -36,7 +38,7 @@ Rectangle {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 24
+        anchors.margins: root.compactLayout ? 14 : 24
         spacing: 12
 
         Label {
@@ -51,6 +53,8 @@ Rectangle {
             text: qsTr("8 \u5361 x 8 \u901a\u9053 (CH1-CH64)\uff1a\u70b9\u51fb\u677f\u5361\u6807\u9898\u5c55\u5f00\u6216\u6536\u8d77\u8be5\u677f\u7684 8 \u8def\u3002\u91c7\u96c6\u542f\u7528\u7531\u201c\u91c7\u96c6\u8bbe\u7f6e\u201d\u9875\u7edf\u4e00\u7ba1\u7406\uff1b\u6b64\u5904\u4ec5\u8bbe\u7f6e\u6ce2\u5f62\u663e\u793a\u548c\u989c\u8272\u3002")
             color: "#8fa3b4"
             font.pixelSize: 14
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
         }
 
         ListView {
@@ -129,20 +133,21 @@ Rectangle {
                                 spacing: 10
 
                                 ColumnLayout {
-                                    Layout.preferredWidth: 210
+                                    Layout.preferredWidth: root.compactLayout ? 112 : 210
                                     Layout.fillHeight: true
                                     spacing: 2
 
                                     Label {
                                         text: card.info.name
                                         color: card.info.color
-                                        font.pixelSize: 18
+                                        font.pixelSize: root.compactLayout ? 15 : 18
                                         font.bold: true
                                     }
 
                                     Label {
                                         text: qsTr("\u677f\u5361 ") + (card.info.boardIndex + 1) + " / " + qsTr("\u901a\u9053 ") + (card.info.channelIndex + 1)
                                         color: "#8fa3b4"
+                                        visible: !root.compactLayout
                                         font.pixelSize: 14
                                     }
                                 }
@@ -155,7 +160,7 @@ Rectangle {
 
                                 FieldStyle {
                                     id: nameField
-                                    Layout.preferredWidth: 220
+                                    Layout.preferredWidth: root.compactLayout ? 130 : 220
                                     implicitHeight: 38
                                     text: card.info.name
                                     maximumLength: 20
@@ -168,14 +173,14 @@ Rectangle {
                                 }
 
                                 ButtonStyle {
-                                    Layout.preferredWidth: 118
+                                    Layout.preferredWidth: root.compactLayout ? 98 : 118
                                     text: card.info.visible ? qsTr("\u9690\u85cf\u6ce2\u5f62") : qsTr("\u663e\u793a\u6ce2\u5f62")
                                     onClicked: root.channelVisibleRequested(card.channelIndex, !card.info.visible)
                                 }
 
                                 ComboBox {
                                     id: colorBox
-                                    Layout.preferredWidth: 120
+                                    Layout.preferredWidth: root.compactLayout ? 92 : 120
                                     implicitHeight: 38
                                     model: ["Cyan", "Yellow", "Green", "Purple", "Orange", "Blue", "Pink", "Lime"]
                                     currentIndex: ["#39e6bb", "#f2d05c", "#72d18c", "#c58bea", "#f0a35e", "#63b3ed", "#ef7aa8", "#a6d96a"].indexOf(card.info.color)
@@ -202,6 +207,7 @@ Rectangle {
                                 }
 
                                 Label {
+                                    visible: !root.compactLayout
                                     text: Number(card.info.voltsPerDiv).toFixed(1) + " V/div   " + Number(card.info.verticalOffsetV).toFixed(1) + " V"
                                     color: "#d9e4ec"
                                     font.pixelSize: 14

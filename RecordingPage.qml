@@ -93,7 +93,7 @@ Rectangle {
             Layout.fillWidth: true
             ColumnLayout {
                 spacing: 1
-                Label { text: qsTr("\u6570\u636e\u5f55\u5236"); color: "#d9e4ec"; font.pixelSize: 21; font.bold: true }
+                Label { text: qsTr("\u6570\u636e\u5f55\u5236"); color: "#d9e4ec"; font.pixelSize: 22; font.bold: true }
                 Label { text: qsTr("\u4f4e\u901f\u6a21\u62df\u5199\u5165\uff0c\u5bb9\u91cf\u6309\u7406\u8bba\u91c7\u96c6\u541e\u5410\u7edf\u8ba1"); color: "#8fa3b4"; font.pixelSize: 12 }
             }
             Item { Layout.fillWidth: true }

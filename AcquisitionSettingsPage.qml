@@ -20,6 +20,7 @@ Rectangle {
     property var draftBoardRates: []
     property int draftSimulationStressRate: 5000
     property string draftSimulationEventMode: "off"
+    property var expandedBoards: [true, false, false, false, false, false, false, false]
     property string validationMessage: ""
     readonly property int draftChannelCount: draftChannels.filter(value => value).length
     readonly property real estimatedThroughput: {
@@ -49,10 +50,16 @@ Rectangle {
         draftBoardRates = acquisitionConfig.boardSampleRates.slice()
         draftSimulationStressRate = acquisitionConfig.simulationStressRate
         draftSimulationEventMode = acquisitionConfig.simulationEventMode || "off"
+        const expanded = []
+        for (let board = 0; board < 8; ++board)
+            expanded.push(draftChannels.slice(board * 8, board * 8 + 8).some(enabled => enabled))
+        expandedBoards = expanded
         validationMessage = ""
     }
 
     function boardChannelCount(board) { return draftChannels.slice(board * 8, board * 8 + 8).filter(value => value).length }
+    function boardExpanded(board) { return expandedBoards[board] === true }
+    function toggleBoard(board) { const next = expandedBoards.slice(); next[board] = !next[board]; expandedBoards = next }
     function draftConfig() {
         return {
             mode: draftMode,
@@ -102,68 +109,65 @@ Rectangle {
         hoverEnabled: true
         indicator: Rectangle {
             implicitWidth: 18; implicitHeight: 18; x: 0; y: (parent.height - height) / 2; radius: 2
-            color: control.checked ? "#35a9a0" : control.hovered ? "#193441" : "#14232e"
-            border.color: control.down ? "#d9f6f2" : "#7292a4"
+            color: control.hovered ? "#193441" : "#14232e"
+            border.color: control.checked ? "#48c5b6" : control.down ? "#d9f6f2" : "#7292a4"
             scale: control.down ? .88 : 1
+            Rectangle { anchors.centerIn: parent; width: 8; height: 8; radius: 1; visible: control.checked; color: "#48c5b6" }
             Behavior on color { ColorAnimation { duration: 120 } }
             Behavior on scale { NumberAnimation { duration: 120 } }
         }
     }
 
-    ScrollView {
-        anchors.fill: parent; clip: true; contentWidth: availableWidth
-        ColumnLayout {
-            width: parent.width; anchors.margins: 24; spacing: 14
+    // The page-level wrapper owns the common content gutter, matching the
+    // root layouts of ChannelSettingsPage and RecordingPage.
+    Item {
+        anchors.fill: parent
+        anchors.margins: 24
+
+        ScrollView {
+            anchors.fill: parent
+            clip: true
+            contentWidth: availableWidth
+            ColumnLayout {
+            width: parent.width
+            spacing: 12
             Label { text: qsTr("采集设置"); color: "#d9e4ec"; font.pixelSize: 22; font.bold: true }
             Rectangle {
-                Layout.fillWidth: true; implicitHeight: 98; radius: 5
-                color: root.simulationRunning ? "#302822" : "#182b38"; border.color: root.simulationRunning ? "#e8a94b" : "#365467"
+                Layout.fillWidth: true; implicitHeight: 62; radius: 5; color: "#182b38"; border.color: "#365467"
                 RowLayout {
-                    anchors.fill: parent; anchors.margins: 12; spacing: 14
-                    ColumnLayout {
-                        spacing: 3
-                        Label { text: qsTr("模拟压力测试采样率"); color: "#d9e4ec"; font.pixelSize: 14 }
-                        ComboBox {
-                            id: stressRateBox; Layout.preferredWidth: 210
-                            model: root.capabilityBackend.simulationStressRates
-                            currentIndex: model.indexOf(root.draftSimulationStressRate)
-                            onActivated: { root.draftSimulationStressRate = Number(currentText); root.stageOrApply() }
-                            contentItem: Text { leftPadding: 8; text: root.formatRate(Number(stressRateBox.currentText)); color: "#d9e4ec"; verticalAlignment: Text.AlignVCenter }
-                            background: Rectangle { radius: 3; color: "#14232e"; border.color: "#365467" }
-                        }
-                    }
-                    ColumnLayout {
-                        spacing: 3
-                        Label { text: qsTr("已启用通道"); color: "#8fa3b4"; font.pixelSize: 13 }
-                        Label { text: root.draftChannelCount + qsTr(" 路"); color: "#35d19b"; font.pixelSize: 18; font.bold: true }
-                    }
-                    ColumnLayout {
-                        spacing: 3
-                        Label { text: qsTr("硬件预计吞吐量"); color: "#8fa3b4"; font.pixelSize: 13 }
-                        Label { text: root.formatBytesPerSecond(root.estimatedThroughput); color: "#d9e4ec"; font.pixelSize: 18; font.bold: true }
-                    }
-                    ColumnLayout {
-                        spacing: 3
-                        Label { text: qsTr("模拟生成吞吐量"); color: "#8fa3b4"; font.pixelSize: 13 }
-                        Label { text: root.formatBytesPerSecond(root.simulatedThroughput); color: "#35d19b"; font.pixelSize: 18; font.bold: true }
-                    }
+                    anchors.fill: parent; anchors.margins: 10; spacing: 18
+                    ColumnLayout { spacing: 1; Label { text: qsTr("\u6a21\u62df\u91c7\u6837\u7387"); color: "#8fa3b4"; font.pixelSize: 12 } Label { text: root.formatRate(root.draftSimulationStressRate); color: "#d9e4ec"; font.pixelSize: 17; font.bold: true } }
+                    ColumnLayout { spacing: 1; Label { text: qsTr("\u542f\u7528\u901a\u9053"); color: "#8fa3b4"; font.pixelSize: 12 } Label { text: root.draftChannelCount + qsTr(" \u8def"); color: "#35d19b"; font.pixelSize: 17; font.bold: true } }
+                    ColumnLayout { spacing: 1; Label { text: qsTr("\u9884\u8ba1\u6570\u636e\u7387"); color: "#8fa3b4"; font.pixelSize: 12 } Label { text: root.formatBytesPerSecond(root.simulatedThroughput); color: "#35d19b"; font.pixelSize: 17; font.bold: true } }
                     Item { Layout.fillWidth: true }
-                    AppButton {
-                        visible: root.simulationRunning; text: qsTr("停止并应用"); primary: true; implicitHeight: 36
-                        onClicked: root.stopAndApplyRequested(root.draftConfig())
-                    }
+                    AppButton { visible: root.simulationRunning; text: qsTr("\u505c\u6b62\u5e76\u5e94\u7528"); primary: true; implicitHeight: 32; onClicked: root.stopAndApplyRequested(root.draftConfig()) }
+                    /* Legacy malformed text retained only to keep this patch narrowly scoped.
+                    ColumnLayout { spacing: 1; Label { text: qsTr("模拟采样率"); color: "#8fa3b4"; font.pixelSize: 12 }; Label { text: root.formatRate(root.draftSimulationStressRate); color: "#d9e4ec"; font.pixelSize: 17; font.bold: true } }
+                    ColumnLayout { spacing: 1; Label { text: qsTr("启用通道"); color: "#8fa3b4"; font.pixelSize: 12 }; Label { text: root.draftChannelCount + qsTr(" 路"); color: "#35d19b"; font.pixelSize: 17; font.bold: true } }
+                    ColumnLayout { spacing: 1; Label { text: qsTr("预计数据率"); color: "#8fa3b4"; font.pixelSize: 12 }; Label { text: root.formatBytesPerSecond(root.simulatedThroughput); color: "#35d19b"; font.pixelSize: 17; font.bold: true } }
+                    Item { Layout.fillWidth: true }
+                    AppButton { visible: root.simulationRunning; text: qsTr("停止并应用"); primary: true; implicitHeight: 32; onClicked: root.stopAndApplyRequested(root.draftConfig()) }
+                    */
                 }
             }
             Rectangle {
-                Layout.fillWidth: true; implicitHeight: 52; radius: 5; color: "#14232e"; border.color: "#30495a"
+                Layout.fillWidth: true; implicitHeight: 54; radius: 5; color: "#14232e"; border.color: "#30495a"
                 RowLayout {
                     anchors.fill: parent; anchors.margins: 10; spacing: 12
-                    Label { text: qsTr("模拟测试事件"); color: "#d9e4ec"; font.bold: true }
+                    Label { text: qsTr("模拟源设置"); color: "#d9e4ec"; font.bold: true }
+                    Label { text: qsTr("压力采样率"); color: "#8fa3b4"; font.pixelSize: 12 }
                     ComboBox {
-                        id: eventModeBox; Layout.preferredWidth: 150
-                        model: [qsTr("关闭"), qsTr("自动随机")]
-                        currentIndex: root.draftSimulationEventMode === "automatic" ? 1 : 0
+                        id: stressRateBox; Layout.preferredWidth: 150; implicitHeight: 32; model: root.capabilityBackend.simulationStressRates; currentIndex: model.indexOf(root.draftSimulationStressRate)
+                        onActivated: { root.draftSimulationStressRate = Number(currentText); root.stageOrApply() }
+                        contentItem: Text { leftPadding: 8; text: root.formatRate(Number(stressRateBox.currentText)); color: "#d9e4ec"; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 3; color: "#223542"; border.color: "#365467" }
+                    }
+                    Label { text: qsTr("随机事件"); color: "#8fa3b4"; font.pixelSize: 12 }
+                    ComboBox {
+                        id: eventModeBox; Layout.preferredWidth: 130; implicitHeight: 32; model: [qsTr("关闭"), qsTr("自动随机")]; currentIndex: root.draftSimulationEventMode === "automatic" ? 1 : 0
                         onActivated: { root.draftSimulationEventMode = currentIndex === 1 ? "automatic" : "off"; root.stageOrApply() }
+                        contentItem: Text { leftPadding: 8; text: eventModeBox.currentText; color: "#d9e4ec"; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 3; color: "#223542"; border.color: "#365467" }
                     }
                     Item { Layout.fillWidth: true }
                 }
@@ -175,33 +179,34 @@ Rectangle {
                 model: 8
                 delegate: Rectangle {
                     id: boardCard; required property int index
-                    Layout.fillWidth: true; implicitHeight: 118; radius: 5; color: "#182b38"
+                    readonly property bool expanded: root.boardExpanded(index)
+                    Layout.fillWidth: true; implicitHeight: expanded ? 86 : 44; radius: 5; color: "#182b38"
                     border.color: root.boardChannelCount(index) > 0 ? "#3b7380" : "#314252"
                     ColumnLayout {
-                        anchors.fill: parent; anchors.margins: 10; spacing: 6
+                        anchors.fill: parent; anchors.margins: 7; spacing: 5
                         RowLayout {
                             Layout.fillWidth: true
+                            AppButton { text: boardCard.expanded ? "⌄" : "›"; implicitWidth: 26; implicitHeight: 28; fillColor: "transparent"; borderColor: "transparent"; textColor: "#8fa3b4"; font.pixelSize: 20; onClicked: root.toggleBoard(boardCard.index) }
                             SelectionCheckBox {
-                                id: boardBox; text: qsTr("板卡 ") + (boardCard.index + 1) + qsTr("（全选）")
+                                id: boardBox; text: qsTr("板卡 ") + (boardCard.index + 1)
                                 checked: root.boardChannelCount(boardCard.index) === 8
                                 onClicked: root.setBoard(boardCard.index, root.boardChannelCount(boardCard.index) !== 8)
                                 contentItem: Text { text: boardBox.text; leftPadding: boardBox.indicator.width + 7; color: "#d9e4ec"; font.bold: true; font.pixelSize: 15; verticalAlignment: Text.AlignVCenter }
                             }
-                            Label { text: root.boardChannelCount(boardCard.index) + " / 8"; color: "#8fa3b4" }
+                            Label { text: root.boardChannelCount(boardCard.index) + " / 8"; color: root.boardChannelCount(boardCard.index) > 0 ? "#35d19b" : "#8fa3b4"; font.pixelSize: 12 }
                             Item { Layout.fillWidth: true }
-                            Label { text: qsTr("单通道采样率"); color: "#8fa3b4"; font.pixelSize: 13 }
                             ComboBox {
-                                id: boardRateBox; Layout.preferredWidth: 150
+                                id: boardRateBox; Layout.preferredWidth: 132; implicitHeight: 28
                                 model: root.capabilityBackend.ratesForBoard(boardCard.index)
                                 currentIndex: model.indexOf(root.draftBoardRates[boardCard.index])
                                 onActivated: root.setBoardRate(boardCard.index, Number(currentText))
                                 contentItem: Text { leftPadding: 8; text: root.formatRate(Number(boardRateBox.currentText)); color: "#d9e4ec"; verticalAlignment: Text.AlignVCenter }
-                                background: Rectangle { radius: 3; color: "#14232e"; border.color: "#365467" }
+                                background: Rectangle { radius: 3; color: "#223542"; border.color: "#365467" }
                             }
-                            Label { text: qsTr("能力表（待确认）"); color: "#6f8b9c"; font.pixelSize: 12 }
+                            Rectangle { implicitWidth: 58; implicitHeight: 20; radius: 10; color: "#26313b"; border.color: "#485b69"; Label { anchors.centerIn: parent; text: qsTr("待确认"); color: "#8fa3b4"; font.pixelSize: 10 } }
                         }
                         RowLayout {
-                            Layout.fillWidth: true; spacing: 9
+                            visible: boardCard.expanded; Layout.fillWidth: true; spacing: 8
                             Repeater {
                                 model: 8
                                 delegate: SelectionCheckBox {
@@ -209,13 +214,14 @@ Rectangle {
                                     readonly property int channel: boardCard.index * 8 + index
                                     text: "CH" + (channel + 1); checked: root.draftChannels[channel]
                                     onClicked: root.setChannel(channel, checked)
-                                    contentItem: Text { text: channelBox.text; leftPadding: channelBox.indicator.width + 5; color: "#d9e4ec"; font.pixelSize: 14; verticalAlignment: Text.AlignVCenter }
+                                    contentItem: Text { text: channelBox.text; leftPadding: channelBox.indicator.width + 5; color: channelBox.checked ? "#d9e4ec" : "#8fa3b4"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
                                 }
                             }
                             Item { Layout.fillWidth: true }
                         }
                     }
                 }
+            }
             }
         }
     }

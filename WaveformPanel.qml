@@ -8,6 +8,7 @@ Rectangle {
     id: root
     color: "#132633"
     border.color: "#314b5b"
+    clip: true
 
     required property bool activePage
     required property var channelStore
@@ -23,6 +24,10 @@ Rectangle {
     required property real sharedHistoryOffset
     required property real samplePeriodSeconds
     required property string interpolationMode
+    required property bool triggerFrameVisible
+    required property real triggerTimeSeconds
+    required property int triggerChannelIndex
+    required property real triggerLevel
     property bool waveformLabelsVisible: true
     property var displaySnapshot: ({ channels: [], mode: "raw", sampleCount: 0, samplesPerPixel: 0 })
     readonly property bool interpolationAvailable: displaySnapshot.mode === "raw" && Number(displaySnapshot.samplesPerPixel) < 0.5
@@ -122,6 +127,9 @@ Rectangle {
                     // One C++ snapshot per display frame, shared by CH1–CH8.
                     const snapshot = root.displaySnapshot
                     const snapshotChannels = snapshot.channels || []
+                    const windowDuration = Math.max(1e-12, root.sharedWindowEnd - root.sharedWindowStart)
+                    const triggerX = (root.triggerTimeSeconds - root.sharedWindowStart) / windowDuration * width
+                    const showTrigger = root.triggerFrameVisible && triggerX >= 0 && triggerX <= width
 
                     for (let viewIndex = 0; viewIndex < root.activeChannels.length; ++viewIndex) {
                         const channelIndex = root.activeChannels[viewIndex], data = root.channelStore.channel(channelIndex), top = viewIndex * viewHeight, divisionHeight = viewHeight / 4
@@ -214,6 +222,27 @@ Rectangle {
                         }
                         if (drew && !pointsOnly) context.stroke()
                         context.restore()
+
+                        if (showTrigger) {
+                            context.strokeStyle = "#f2c94c"
+                            context.lineWidth = 1
+                            context.setLineDash([4, 3])
+                            context.beginPath()
+                            context.moveTo(triggerX, top)
+                            context.lineTo(triggerX, top + viewHeight)
+                            context.stroke()
+                            context.setLineDash([])
+                            if (channelIndex === root.triggerChannelIndex) {
+                                const triggerY = top + viewHeight / 2 - (root.triggerLevel + data.verticalOffsetV) * (divisionHeight / data.voltsPerDiv)
+                                context.strokeStyle = "#f2c94c"
+                                context.setLineDash([3, 3])
+                                context.beginPath()
+                                context.moveTo(0, triggerY)
+                                context.lineTo(width, triggerY)
+                                context.stroke()
+                                context.setLineDash([])
+                            }
+                        }
 
                         const current = points.length >= 2 ? points[points.length - 1] : 0
 
