@@ -9,6 +9,8 @@ Rectangle {
     required property real timePerDivMs
     required property real horizontalStepSeconds
     required property string displayMode
+    required property string interpolationMode
+    required property bool interpolationAvailable
     required property bool gridVisible
     required property bool hasSimulationData
     required property real historyOffsetSeconds
@@ -18,6 +20,7 @@ Rectangle {
     signal timePerDivRequested(real value)
     signal verticalOffsetRequested(real value)
     signal displayModeRequested(string value)
+    signal interpolationModeRequested(string value)
     signal gridVisibleRequested(bool value)
     signal moveHistoryLeftRequested()
     signal moveHistoryRightRequested()
@@ -242,6 +245,23 @@ Rectangle {
                 Layout.fillWidth: true
                 onClicked: root.gridVisibleRequested(!root.gridVisible)
             }
+        }
+
+        ComboBox {
+            id: interpolationBox
+            Layout.fillWidth: true
+            implicitHeight: 32
+            model: [qsTr("自动"), qsTr("无"), qsTr("线性"), qsTr("方波"), qsTr("正弦")]
+            currentIndex: ({ auto: 0, none: 1, linear: 2, step: 3, sine: 4 })[root.interpolationMode]
+            enabled: root.interpolationAvailable
+            onActivated: root.interpolationModeRequested(["auto", "none", "linear", "step", "sine"][currentIndex])
+            contentItem: Text {
+                leftPadding: 10
+                text: qsTr("插值：") + interpolationBox.currentText
+                color: interpolationBox.enabled ? "#d9e4ec" : "#71818d"
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle { color: interpolationBox.enabled ? "#223542" : "#18242d"; radius: 3; border.color: interpolationBox.enabled ? "#365467" : "#314252" }
         }
 
         Item {

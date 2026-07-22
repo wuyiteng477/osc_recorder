@@ -12,6 +12,10 @@ Rectangle {
     property int selectedPlaybackChannelId: -1
     property var channelViewSettings: ({})
     property bool waveformLabelsVisible: true
+    property bool exportWholeRecord: false
+    property bool exportAllRecordedChannels: false
+    property string exportFormat: "csv"
+    property url exportTargetUrl
     // 5,000 S/s 时相邻样本间隔为 0.2 ms；默认步长不应粗于一个样本。
     property int navigationStepIndex: 0
     readonly property real samplePeriodSeconds: playback.sampleRate > 0 ? 1 / playback.sampleRate : 0.0002
@@ -79,8 +83,22 @@ Rectangle {
     ]
     function closestTimePerDivIndex() { const current = playback.viewDurationSeconds / 10; let closest = 0, distance = Infinity; for (let index = 0; index < timePerDivOptions.length; ++index) { const candidate = Math.abs(timePerDivOptions[index].seconds - current); if (candidate < distance) { closest = index; distance = candidate } } return closest }
     function setTimePerDiv(seconds) { const centre = playback.viewStartSeconds + playback.viewDurationSeconds / 2; const durationSeconds = seconds * 10; playback.setView(centre - durationSeconds / 2, durationSeconds) }
+    function exportRangeTag() {
+        const start = exportWholeRecord ? 0 : playback.viewStartSeconds
+        const end = exportWholeRecord ? playback.durationSeconds : Math.min(playback.durationSeconds, playback.viewStartSeconds + playback.viewDurationSeconds)
+        return "t_" + start.toFixed(4).replace(".", "_") + "s_to_" + end.toFixed(4).replace(".", "_") + "s"
+    }
+    function openExportSettings() { exportTargetUrl = playback.suggestedExportUrl(exportRangeTag(), exportFormat); exportSettings.open() }
 
     FolderDialog { id: folderDialog; title: qsTr("\u9009\u62e9\u5f55\u5236\u4f1a\u8bdd\u76ee\u5f55"); onAccepted: root.playback.loadSessionUrl(selectedFolder) }
+    FileDialog {
+        id: exportFileDialog
+        title: root.exportFormat === "mat" ? qsTr("保存 MAT 数据") : qsTr("保存导出数据")
+        fileMode: FileDialog.SaveFile
+        nameFilters: [root.exportFormat === "float32" ? "Float32 files (*.f32)"
+            : root.exportFormat === "mat" ? "MATLAB MAT files (*.mat)" : "CSV files (*.csv)"]
+        onAccepted: root.exportTargetUrl = selectedFile
+    }
 
     component ActionButton: AppButton { fillColor: primary ? "#168b7c" : "#223542" }
     component SummaryCard: Rectangle {
@@ -179,6 +197,7 @@ Rectangle {
             ActionButton { visible: root.selectedPlaybackChannelId >= 0; text: qsTr("归零"); enabled: visible; onClicked: root.resetSelectedVertical() }
             ActionButton { visible: root.selectedPlaybackChannelId >= 0; text: qsTr("自动适配"); enabled: visible; onClicked: root.fitSelectedVertical() }
             ActionButton { text: root.waveformLabelsVisible ? qsTr("隐藏标注") : qsTr("显示标注"); enabled: playback.status === "ready"; onClicked: { root.waveformLabelsVisible = !root.waveformLabelsVisible; canvas.requestPaint() } }
+            ActionButton { text: qsTr("导出数据"); enabled: playback.status === "ready" && !playback.exportingData; onClicked: root.openExportSettings() }
             Item { Layout.fillWidth: true }
         }
         Label { visible: playback.status === "ready" && playback.displayedChannelCount === 0; text: qsTr("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u56de\u653e\u901a\u9053\u3002"); color: "#e8a94b"; font.pixelSize: 12 }
@@ -328,6 +347,86 @@ Rectangle {
                     handle: Rectangle { x: timeNavigator.leftPadding + timeNavigator.visualPosition * (timeNavigator.availableWidth - width); y: timeNavigator.topPadding + timeNavigator.availableHeight / 2 - height / 2; width: 12; height: 12; radius: 6; color: timeNavigator.pressed ? "#39e6bb" : "#79bfc1" }
                 }
                 Label { text: root.duration(playback.durationSeconds); color: "#8fa3b4"; font.pixelSize: 12; Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight }
+            }
+        }
+    }
+
+    Popup {
+        id: exportSettings
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        width: Math.min(480, parent.width - 48)
+        height: 294
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color: "#142631"; border.color: "#3a6574"; radius: 6 }
+        contentItem: ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 10
+            Label { text: qsTr("导出数据"); color: "#d9e4ec"; font.pixelSize: 17; font.bold: true }
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: qsTr("导出格式"); color: "#8fa3b4"; Layout.preferredWidth: 72 }
+                ComboBox {
+                    id: exportFormatSelector
+                    Layout.fillWidth: true
+                    model: ["CSV", "Float32 + JSON", "MAT"]
+                    currentIndex: root.exportFormat === "float32" ? 1 : root.exportFormat === "mat" ? 2 : 0
+                    onActivated: {
+                        root.exportFormat = currentIndex === 1 ? "float32" : currentIndex === 2 ? "mat" : "csv"
+                        root.exportTargetUrl = playback.suggestedExportUrl(root.exportRangeTag(), root.exportFormat)
+                    }
+                    contentItem: Text { leftPadding: 8; text: exportFormatSelector.displayText; color: "#d9e4ec"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { radius: 3; color: "#1a2a36"; border.color: "#3a5263" }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: qsTr("导出范围"); color: "#8fa3b4"; Layout.preferredWidth: 72 }
+                ComboBox {
+                    id: exportRangeSelector
+                    Layout.fillWidth: true
+                    model: [qsTr("当前时间窗口"), qsTr("全部记录")]
+                    currentIndex: root.exportWholeRecord ? 1 : 0
+                    onActivated: { root.exportWholeRecord = currentIndex === 1; root.exportTargetUrl = playback.suggestedExportUrl(root.exportRangeTag(), root.exportFormat) }
+                    contentItem: Text { leftPadding: 8; text: exportRangeSelector.displayText; color: "#d9e4ec"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { radius: 3; color: "#1a2a36"; border.color: "#3a5263" }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: qsTr("导出通道"); color: "#8fa3b4"; Layout.preferredWidth: 72 }
+                ComboBox {
+                    id: exportChannelSelector
+                    Layout.fillWidth: true
+                    model: [qsTr("当前显示的通道"), qsTr("全部录制通道")]
+                    currentIndex: root.exportAllRecordedChannels ? 1 : 0
+                    onActivated: root.exportAllRecordedChannels = currentIndex === 1
+                    contentItem: Text { leftPadding: 8; text: exportChannelSelector.displayText; color: "#d9e4ec"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { radius: 3; color: "#1a2a36"; border.color: "#3a5263" }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: qsTr("保存文件"); color: "#8fa3b4"; Layout.preferredWidth: 72 }
+                Label { text: root.exportTargetUrl.toString(); color: "#d9e4ec"; font.pixelSize: 12; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                ActionButton { text: qsTr("选择位置"); onClicked: { exportFileDialog.currentFile = root.exportTargetUrl; exportFileDialog.open() } }
+            }
+            Item { Layout.fillHeight: true }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                ActionButton { text: qsTr("取消"); onClicked: exportSettings.close() }
+                ActionButton {
+                    text: qsTr("开始导出")
+                    primary: true
+                    enabled: root.exportTargetUrl.toString().length > 0
+                    onClicked: { if (playback.beginDataExport(root.exportTargetUrl, root.exportWholeRecord, root.exportAllRecordedChannels, root.exportFormat)) exportSettings.close() }
+                }
             }
         }
     }

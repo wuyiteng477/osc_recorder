@@ -17,32 +17,43 @@ ApplicationWindow {
     property bool simulationRunning: false
     property int selectedChannelIndex: 0
     property string displayMode: "update"
+    property string interpolationMode: "auto"
     property bool gridVisible: true
     // Controls the language used for new runtime-log entries.  Acquisition and
     // waveform state are deliberately independent of this presentation option.
     property string logLanguage: "zh"
     property real timePerDivMs: 1.0
-    property real historyOffsetSeconds: 0
+    property real sharedHistoryOffset: 0
     property bool followLatest: true
     property real sampleTimeSeconds: 0
     property real latestSampleTime: 0
     // The only applied acquisition configuration; the settings page keeps only a draft.
+    // Board rates express hardware configuration. Simulation rate is separate.
     property var acquisitionConfig: ({
-        sampleRate: 5000,
         mode: "continuous",
         boardEnabled: [true, false, false, false, false, false, false, false],
-        channelEnabled: [true].concat(new Array(63).fill(false))
+        channelEnabled: [true].concat(new Array(63).fill(false)),
+        boardSampleRates: [5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000],
+        simulationStressRate: 5000
     })
 
     property int acquisitionConfigRevision: 0
-    readonly property int simulationSampleRate: acquisitionConfig.sampleRate
+    readonly property int simulationGenerationRate: acquisitionConfig.simulationStressRate
+    readonly property int displayRefreshRate: acquisitionBackend.displayRefreshRate
     readonly property int enabledAcquisitionChannels: dataStore.enabledCount()
     property int simulationTick: 0
+    // Monotonic wall-clock marker for batching.  It controls only how many
+    // fixed-dt samples are appended in a display frame; signal time itself is
+    // always advanced by exactly sampleCount / simulationGenerationRate.
+    property double lastSimulationTickMs: 0
     // Carries fractional samples between timer ticks so every supported rate
     // has the correct long-term virtual sample count.
     property real simulationSampleRemainder: 0
     readonly property real visibleTimeSeconds: timePerDivMs * 10 / 1000
     readonly property real horizontalStepSeconds: timePerDivMs / 1000
+    readonly property real sharedLatestTime: latestSampleTime
+    readonly property real sharedWindowEnd: sharedLatestTime - sharedHistoryOffset
+    readonly property real sharedWindowStart: sharedWindowEnd - visibleTimeSeconds
     // ChannelStore fills its ListModel during Component.onCompleted.  Depend on
     // its revision as well as the index so CH1 is refreshed after that first
     // initialization; otherwise it can remain an undefined stale value until
@@ -51,9 +62,11 @@ ApplicationWindow {
         const storeRevision = dataStore.revision
         return dataStore.channel(selectedChannelIndex)
     }
-    readonly property bool hasSimulationData: dataStore.hasData
-    readonly property real historyStartTime: dataStore.historyStartTime
+    readonly property bool hasSimulationData: realtimeData.historyCount > 0
+    readonly property real historyStartTime: realtimeData.historyStartTime
     ChannelStore { id: dataStore }
+    AcquisitionBackend { id: acquisitionBackend }
+    RealtimeDataBackend { id: realtimeData }
     RecorderBackend {
         id: recorderBackend
         onEventLogged: (message, level) => window.appendLog(message, message, level)
@@ -87,31 +100,38 @@ ApplicationWindow {
     }
 
     function clampOffset() {
-        historyOffsetSeconds = Math.max(0, Math.min(historyOffsetSeconds, maximumHistoryOffset()))
-        if (historyOffsetSeconds < 1e-9)
-            historyOffsetSeconds = 0
-        followLatest = historyOffsetSeconds === 0
+        // Horizontal position is a sample-grid coordinate.  This makes one
+        // left/right action land on exactly one time division for every view,
+        // rather than accumulating floating-point time offsets.
+        const maximumSamples = Math.max(0, Math.floor(maximumHistoryOffset() * simulationGenerationRate + 1e-9))
+        const requestedSamples = Math.round(sharedHistoryOffset * simulationGenerationRate)
+        sharedHistoryOffset = Math.max(0, Math.min(requestedSamples, maximumSamples)) / simulationGenerationRate
+        if (sharedHistoryOffset < 1e-9)
+            sharedHistoryOffset = 0
+        followLatest = sharedHistoryOffset === 0
     }
 
     function appendSimulationSamples(count) {
         if (count <= 0)
             return
 
-        const interval = 1 / simulationSampleRate
-        dataStore.appendSamples(sampleTimeSeconds, interval, count)
+        const interval = 1 / simulationGenerationRate
+        realtimeData.appendSimulatedSamples(sampleTimeSeconds, interval, count, enabledChannelIds())
         if (recorderBackend.recording)
             recorderBackend.enqueueSimulatedBlock(sampleTimeSeconds, count)
         latestSampleTime = sampleTimeSeconds + (count - 1) * interval
         sampleTimeSeconds += count * interval
 
         if (followLatest)
-            historyOffsetSeconds = 0
-        else
-            historyOffsetSeconds = Math.min(maximumHistoryOffset(), historyOffsetSeconds + count * interval)
+            sharedHistoryOffset = 0
+        else {
+            sharedHistoryOffset = Math.min(maximumHistoryOffset(), sharedHistoryOffset + count * interval)
+            clampOffset()
+        }
     }
 
     function samplesForDuration(milliseconds) {
-        const exactSamples = simulationSampleRate * milliseconds / 1000 + simulationSampleRemainder
+        const exactSamples = simulationGenerationRate * milliseconds / 1000 + simulationSampleRemainder
         const wholeSamples = Math.floor(exactSamples + 1e-12)
         simulationSampleRemainder = exactSamples - wholeSamples
         return wholeSamples
@@ -125,30 +145,54 @@ ApplicationWindow {
         return ids
     }
 
+    function boardEnabledChannelCount(board) {
+        let count = 0
+        for (let local = 0; local < 8; ++local)
+            if (dataStore.channel(board * 8 + local).enabled)
+                ++count
+        return count
+    }
+
+    function estimatedHardwareThroughput() {
+        let bytes = 0
+        for (let board = 0; board < 8; ++board)
+            bytes += boardEnabledChannelCount(board) * acquisitionConfig.boardSampleRates[board] * 4
+        return bytes
+    }
+    function estimatedSimulationThroughput() { return enabledAcquisitionChannels * simulationGenerationRate * 4 }
+
     function startRecording() {
         const channels = enabledChannelIds()
         if (!simulationRunning) {
             appendLog("录制未开始：请先开始采集。", "Recording did not start: start acquisition first.", "NOTICE")
             return
         }
-        if (!recorderBackend.startRecording(simulationSampleRate, channels, acquisitionConfig.mode, simulationRunning))
+        if (!recorderBackend.startRecording(simulationGenerationRate, channels, acquisitionConfig.mode, simulationRunning))
             appendLog("录制未开始：" + recorderBackend.statusDetail, "Recording did not start: " + recorderBackend.statusDetail, "ERROR")
     }
 
     function runSimulationTick() {
+        const nowMs = Date.now()
+        const elapsedMs = lastSimulationTickMs > 0
+                ? Math.max(1, Math.min(100, nowMs - lastSimulationTickMs))
+                : 1
+        lastSimulationTickMs = nowMs
         ++simulationTick
 
         if (acquisitionConfig.mode === "burst") {
             if (simulationTick % 5 === 0)
                 appendSimulationSamples(samplesForDuration(100))
         } else {
-            appendSimulationSamples(samplesForDuration(20))
+            // Do not manufacture a 20 ms acquisition block for every paint.
+            // That made the 50 Hz UI cadence sample CH1…CH8 at a deterministic
+            // phase relationship and produced a channel-number-dependent
+            // display alias.  Batch size follows elapsed time only; every
+            // stored sample still uses the same fixed dt = 1 / sampleRate.
+            appendSimulationSamples(samplesForDuration(elapsedMs))
         }
     }
 
     function validateAcquisitionConfiguration(config) {
-        if (!Number.isInteger(config.sampleRate) || config.sampleRate < 100 || config.sampleRate > 1000000)
-            return "采样率必须是 100 至 1,000,000 S/s 的整数。"
         if (config.mode !== "continuous" && config.mode !== "burst")
             return "请选择有效的采集模式。"
         if (!config.boardEnabled.some(value => value))
@@ -160,6 +204,15 @@ ApplicationWindow {
             if (config.channelEnabled[i] && !config.boardEnabled[Math.floor(i / 8)])
                 return "CH" + (i + 1) + " 已启用，但所属板卡 " + (Math.floor(i / 8) + 1) + " 未启用。"
         }
+
+        if (!Array.isArray(config.boardSampleRates) || config.boardSampleRates.length !== 8)
+            return "板卡采样率配置无效。"
+        for (let board = 0; board < 8; ++board) {
+            if (!acquisitionBackend.supportsHardwareRate(board, config.boardSampleRates[board]))
+                return "板卡 " + (board + 1) + " 的采样率不在后端能力表中。"
+        }
+        if (!acquisitionBackend.supportsSimulationStressRate(config.simulationStressRate))
+            return "模拟压力测试采样率不在后端允许档位中。"
 
         return ""
     }
@@ -177,10 +230,11 @@ ApplicationWindow {
         }
 
         acquisitionConfig = {
-            sampleRate: config.sampleRate,
             mode: config.mode,
             boardEnabled: config.boardEnabled.slice(),
-            channelEnabled: config.channelEnabled.slice()
+            channelEnabled: config.channelEnabled.slice(),
+            boardSampleRates: config.boardSampleRates.slice(),
+            simulationStressRate: config.simulationStressRate
         }
         ++acquisitionConfigRevision
         // Board selection is a sampling gate as well as a UI choice.  A channel
@@ -197,7 +251,7 @@ ApplicationWindow {
             }
         }
 
-        appendLog("采集配置已应用：" + simulationSampleRate + " S/s，" + (acquisitionConfig.mode === "burst" ? "突发采集" : "连续采集") + "，" + enabledAcquisitionChannels + " 路通道。", "Acquisition configuration applied: " + simulationSampleRate + " S/s, " + acquisitionConfig.mode + ", " + enabledAcquisitionChannels + " channels.")
+        appendLog("采集配置已应用：" + enabledAcquisitionChannels + " 路，模拟生成 " + simulationGenerationRate + " S/s，硬件预计吞吐 " + estimatedHardwareThroughput() + " B/s。", "Acquisition configuration applied: " + enabledAcquisitionChannels + " channels, simulation " + simulationGenerationRate + " S/s, hardware throughput " + estimatedHardwareThroughput() + " B/s.")
         return true
     }
     function setSelectedChannel(index) {
@@ -216,10 +270,11 @@ ApplicationWindow {
         }
 
         const next = {
-            sampleRate: acquisitionConfig.sampleRate,
             mode: acquisitionConfig.mode,
             boardEnabled: acquisitionConfig.boardEnabled.slice(),
-            channelEnabled: acquisitionConfig.channelEnabled.slice()
+            channelEnabled: acquisitionConfig.channelEnabled.slice(),
+            boardSampleRates: acquisitionConfig.boardSampleRates.slice(),
+            simulationStressRate: acquisitionConfig.simulationStressRate
         }
         next.channelEnabled[index] = enabled
         if (enabled)
@@ -290,26 +345,27 @@ ApplicationWindow {
         if (dataStore.setRole(selectedChannelIndex, "verticalOffsetV", bounded))
             appendLog(data.name + " 垂直偏移 " + formatNumber(bounded) + " V", data.name + " vertical offset " + formatNumber(bounded) + " V")
     }
-    function logFrequencyVerification() { if (dataStore.historyCount < 3) return; const entries = []; for (let index = 0; index < dataStore.channelCount && entries.length < 8; ++index) if (dataStore.channel(index).enabled) entries.push(dataStore.channel(index).name + "=" + formatNumber(dataStore.zeroCrossingFrequency(index, latestSampleTime, .1)) + " Hz"); if (entries.length) appendLog("频率校验（固定 100 ms）：" + entries.join("，"), "Frequency check (fixed 100 ms): " + entries.join(", ")) }
-    function setTimePerDiv(value) { if (timePerDivMs === value) return; const oldVisible = visibleTimeSeconds, center = latestSampleTime - historyOffsetSeconds - oldVisible / 2, wasFollowing = followLatest; timePerDivMs = value; if (wasFollowing) historyOffsetSeconds = 0; else { historyOffsetSeconds = latestSampleTime - (center + visibleTimeSeconds / 2); clampOffset() } appendLog("时基 " + formatNumber(value) + " ms/div", "Timebase " + formatNumber(value) + " ms/div"); logFrequencyVerification() }
-    function moveHistoryLeft() { const before = historyOffsetSeconds; historyOffsetSeconds += horizontalStepSeconds; clampOffset(); if (before !== historyOffsetSeconds) appendLog("历史位置移动至 " + formatDuration(historyOffsetSeconds), "History moved to " + formatDuration(historyOffsetSeconds)) }
-    function moveHistoryRight() { if (historyOffsetSeconds <= 1e-9) return; historyOffsetSeconds -= horizontalStepSeconds; clampOffset(); appendLog(followLatest ? "已回到最新采样" : "历史位置移动至 " + formatDuration(historyOffsetSeconds), followLatest ? "Returned to latest samples" : "History moved to " + formatDuration(historyOffsetSeconds)) }
+    function logFrequencyVerification() { if (realtimeData.historyCount < 3) return; const entries = []; for (let index = 0; index < dataStore.channelCount && entries.length < 8; ++index) if (dataStore.channel(index).enabled) entries.push(dataStore.channel(index).name + "=" + formatNumber(realtimeData.zeroCrossingFrequency(index, latestSampleTime, .1)) + " Hz"); if (entries.length) appendLog("频率校验（固定 100 ms）：" + entries.join("，"), "Frequency check (fixed 100 ms): " + entries.join(", ")) }
+    function setTimePerDiv(value) { if (timePerDivMs === value) return; const oldVisible = visibleTimeSeconds, center = sharedLatestTime - sharedHistoryOffset - oldVisible / 2, wasFollowing = followLatest; timePerDivMs = value; if (wasFollowing) sharedHistoryOffset = 0; else { sharedHistoryOffset = sharedLatestTime - (center + visibleTimeSeconds / 2); clampOffset() } appendLog("时基 " + formatNumber(value) + " ms/div", "Timebase " + formatNumber(value) + " ms/div"); logFrequencyVerification() }
+    function moveHistoryLeft() { const before = sharedHistoryOffset, stepSamples = Math.max(1, Math.round(horizontalStepSeconds * simulationGenerationRate)); sharedHistoryOffset += stepSamples / simulationGenerationRate; clampOffset(); if (before !== sharedHistoryOffset) appendLog("历史位置移动至 " + formatDuration(sharedHistoryOffset) + "（" + stepSamples + " 样本 / 1 div）", "History moved to " + formatDuration(sharedHistoryOffset) + " (" + stepSamples + " samples / 1 div)") }
+    function moveHistoryRight() { if (sharedHistoryOffset <= 1e-9) return; const stepSamples = Math.max(1, Math.round(horizontalStepSeconds * simulationGenerationRate)); sharedHistoryOffset -= stepSamples / simulationGenerationRate; clampOffset(); appendLog(followLatest ? "已回到最新采样" : "历史位置移动至 " + formatDuration(sharedHistoryOffset) + "（" + stepSamples + " 样本 / 1 div）", followLatest ? "Returned to latest samples" : "History moved to " + formatDuration(sharedHistoryOffset) + " (" + stepSamples + " samples / 1 div)") }
     function changeDisplayMode(mode) { if (displayMode !== mode) { displayMode = mode; appendLog(mode === "roll" ? "滚动模式已启用" : "更新模式已启用", mode === "roll" ? "Scroll mode enabled" : "Update mode enabled") } }
     function setGridVisible(value) { if (gridVisible !== value) { gridVisible = value; appendLog(value ? "网格已显示" : "网格已隐藏", value ? "Grid shown" : "Grid hidden") } }
-    function startSimulation() { if (!simulationRunning) { const error = validateAcquisitionConfiguration(acquisitionConfig); if (error.length) { appendLog("配置校验失败：" + error, "Configuration validation failed: " + error, "ERROR"); return } simulationTick = 0; simulationSampleRemainder = 0; simulationRunning = true; appendSimulationSamples(samplesForDuration(acquisitionConfig.mode === "burst" ? 100 : 20)); appendLog("模拟采集已启动：" + simulationSampleRate + " S/s，" + enabledAcquisitionChannels + " 路，" + (acquisitionConfig.mode === "burst" ? "突发模式" : "连续模式") + "。", "Simulation started: " + simulationSampleRate + " S/s, " + enabledAcquisitionChannels + " channels, " + acquisitionConfig.mode + " mode.") } }
-    function stopSimulation() { if (simulationRunning) { simulationRunning = false; if (recorderBackend.recording) { appendLog("采集已停止，正在安全停止录制。", "Acquisition stopped; safely stopping recording.", "NOTICE"); recorderBackend.stopRecording() } appendLog("模拟采集已停止。", "Simulation stopped.") } }
-    function clearHistory() { dataStore.clearHistory(); historyOffsetSeconds = 0; followLatest = true; appendLog("64 通道历史缓存已清除", "64-channel history cleared") }
-    function verticalFit() { const data = selectedChannel, end = latestSampleTime - historyOffsetSeconds, start = end - visibleTimeSeconds; let min = Infinity, max = -Infinity; const first = dataStore.firstLogicalIndexAtOrAfter(start), last = dataStore.lastLogicalIndexAtOrBefore(end); for (let i = first; i <= last; ++i) { const value = dataStore.historyValue(selectedChannelIndex, (dataStore.historyStartIndex + i) % dataStore.historyCapacity); if (value !== undefined) { min = Math.min(min, value); max = Math.max(max, value) } } if (!isFinite(min)) { appendLog(data.name + " 没有可用于垂直拟合的采样", data.name + " has no samples for vertical fit", "NOTICE"); return } const p2p = Math.max(.001, max - min), ranges = [.2, .5, 1, 2, 5]; let range = 5; for (let i = 0; i < ranges.length; ++i) if (p2p <= ranges[i] * 6.4) { range = ranges[i]; break } dataStore.setRole(selectedChannelIndex, "voltsPerDiv", range); dataStore.setRole(selectedChannelIndex, "verticalOffsetV", Math.max(-5, Math.min(5, -(max + min) / 2))); appendLog(data.name + " 已应用垂直拟合", data.name + " vertical fit applied") }
-    function resetPositions() { const data = selectedChannel; if (!data) return; const changed = data.verticalOffsetV !== data.defaultOffsetV || !followLatest; dataStore.setRole(selectedChannelIndex, "verticalOffsetV", data.defaultOffsetV); historyOffsetSeconds = 0; followLatest = true; if (changed) appendLog(data.name + " 位置已重置", data.name + " position reset") }
+    function startSimulation() { if (!simulationRunning) { const error = validateAcquisitionConfiguration(acquisitionConfig); if (error.length) { appendLog("配置校验失败：" + error, "Configuration validation failed: " + error, "ERROR"); return } simulationTick = 0; simulationSampleRemainder = 0; lastSimulationTickMs = Date.now(); simulationRunning = true; appendSimulationSamples(samplesForDuration(acquisitionConfig.mode === "burst" ? 100 : 1)); appendLog("模拟采集已启动：模拟生成 " + simulationGenerationRate + " S/s，" + enabledAcquisitionChannels + " 路，" + (acquisitionConfig.mode === "burst" ? "突发模式" : "连续模式") + "。", "Simulation started: " + simulationGenerationRate + " S/s, " + enabledAcquisitionChannels + " channels, " + acquisitionConfig.mode + " mode.") } }
+    function stopSimulation() { if (simulationRunning) { simulationRunning = false; lastSimulationTickMs = 0; if (recorderBackend.recording) { appendLog("采集已停止，正在安全停止录制。", "Acquisition stopped; safely stopping recording.", "NOTICE"); recorderBackend.stopRecording() } appendLog("模拟采集已停止。", "Simulation stopped.") } }
+    function clearHistory() { realtimeData.clearHistory(); sharedHistoryOffset = 0; followLatest = true; appendLog("64 通道历史缓存已清除", "64-channel history cleared") }
+    function verticalFit() { const data = selectedChannel, rangeData = realtimeData.channelRange(selectedChannelIndex, sharedWindowStart, sharedWindowEnd); const min = rangeData.minimum, max = rangeData.maximum; if (!rangeData.valid) { appendLog(data.name + " 没有可用于垂直拟合的采样", data.name + " has no samples for vertical fit", "NOTICE"); return } const p2p = Math.max(.001, max - min), ranges = [.2, .5, 1, 2, 5]; let range = 5; for (let i = 0; i < ranges.length; ++i) if (p2p <= ranges[i] * 3.2) { range = ranges[i]; break } dataStore.setRole(selectedChannelIndex, "voltsPerDiv", range); dataStore.setRole(selectedChannelIndex, "verticalOffsetV", Math.max(-5, Math.min(5, -(max + min) / 2))); appendLog(data.name + " 已应用垂直拟合（保留边界）", data.name + " vertical fit applied with viewport margin") }
+    function resetPositions() { const data = selectedChannel; if (!data) return; const changed = data.verticalOffsetV !== data.defaultOffsetV || !followLatest; dataStore.setRole(selectedChannelIndex, "verticalOffsetV", data.defaultOffsetV); sharedHistoryOffset = 0; followLatest = true; if (changed) appendLog(data.name + " 位置已重置", data.name + " position reset") }
 
     ListModel { id: logModel }
-    Timer { interval: 20; running: window.simulationRunning; repeat: true; onTriggered: window.runSimulationTick() }
+    // Display refresh stays independent from generated sample rate and time/div.
+    Timer { interval: Math.round(1000 / window.displayRefreshRate); running: window.simulationRunning; repeat: true; onTriggered: window.runSimulationTick() }
     Component.onCompleted: appendLog("软件已就绪，64 通道模拟模式", "Application ready in 64-channel simulation mode")
 
     ColumnLayout {
         anchors.fill: parent; spacing: 0
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 54; color: "#15212c"; border.color: "#314252"
-            RowLayout { anchors.fill: parent; anchors.margins: 18; Label { text: window.title; color: "#f0f6f8"; font.pixelSize: 18; font.bold: true } Item { Layout.fillWidth: true } Label { text: (window.currentPage === "playback" ? qsTr("\u5b9e\u65f6\u91c7\u96c6\uff1a") : qsTr("\u91c7\u96c6: ")) + (window.simulationRunning ? qsTr("\u8fd0\u884c\u4e2d") : qsTr("\u5df2\u505c\u6b62")); color: window.simulationRunning ? "#35d19b" : "#8fa3b4"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: qsTr("\u91c7\u6837\u7387\uff1a") + window.simulationSampleRate + " S/s · " + qsTr("\u91c7\u96c6\u901a\u9053\uff1a") + window.enabledAcquisitionChannels + qsTr(" \u8def"); color: "#d9e4ec"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: window.acquisitionConfig.mode === "burst" ? "Burst" : "Continuous"; color: "#19b4a5"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } }
+            RowLayout { anchors.fill: parent; anchors.margins: 18; Label { text: window.title; color: "#f0f6f8"; font.pixelSize: 18; font.bold: true } Item { Layout.fillWidth: true } Label { text: (window.currentPage === "playback" ? qsTr("\u5b9e\u65f6\u91c7\u96c6\uff1a") : qsTr("\u91c7\u96c6: ")) + (window.simulationRunning ? qsTr("\u8fd0\u884c\u4e2d") : qsTr("\u5df2\u505c\u6b62")); color: window.simulationRunning ? "#35d19b" : "#8fa3b4"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: qsTr("\u6a21\u62df\u751f\u6210\uff1a") + window.simulationGenerationRate + " S/s · " + qsTr("\u91c7\u96c6\u901a\u9053\uff1a") + window.enabledAcquisitionChannels + qsTr(" \u8def"); color: "#d9e4ec"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } Label { text: window.acquisitionConfig.mode === "burst" ? "Burst" : "Continuous"; color: "#19b4a5"; opacity: window.currentPage === "playback" ? 0.7 : 1.0; font.bold: true } }
         }
         RowLayout { Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
             // The navigation is intentionally a column of its own, including
@@ -317,12 +373,12 @@ ApplicationWindow {
             NavigationPanel { Layout.preferredWidth: 176; Layout.fillHeight: true; currentPage: window.currentPage; onPageRequested: page => { if (window.currentPage !== page) { window.currentPage = page; window.appendLog("已打开 " + page + " 页面", "Opened " + page + " page") } } }
             ColumnLayout { Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
                 StackLayout { Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: ["realtime", "playback", "channels", "acquisition", "recording", "system"].indexOf(window.currentPage)
-                WaveformPanel { activePage: window.currentPage === "realtime"; channelStore: dataStore; selectedChannelIndex: window.selectedChannelIndex; simulationRunning: window.simulationRunning; displayMode: window.displayMode; gridVisible: window.gridVisible; timePerDivMs: window.timePerDivMs; latestSampleTime: window.latestSampleTime; historyOffsetSeconds: window.historyOffsetSeconds; samplePeriodSeconds: 1 / window.simulationSampleRate; onSelectedChannelRequested: index => window.setSelectedChannel(index); onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
+                WaveformPanel { id: realtimeWaveform; activePage: window.currentPage === "realtime"; channelStore: dataStore; realtimeData: realtimeData; selectedChannelIndex: window.selectedChannelIndex; simulationRunning: window.simulationRunning; displayMode: window.displayMode; gridVisible: window.gridVisible; timePerDivMs: window.timePerDivMs; sharedWindowStart: window.sharedWindowStart; sharedWindowEnd: window.sharedWindowEnd; sharedLatestTime: window.sharedLatestTime; sharedHistoryOffset: window.sharedHistoryOffset; samplePeriodSeconds: 1 / window.simulationGenerationRate; interpolationMode: window.interpolationMode; onSelectedChannelRequested: index => window.setSelectedChannel(index); onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
                 PlaybackPage { playback: playbackBackend }
                 ChannelSettingsPage { channelStore: dataStore; onChannelNameRequested: (index, name) => window.setChannelName(index, name); onChannelVisibleRequested: (index, value) => window.setChannelVisible(index, value); onChannelColorRequested: (index, color) => window.setChannelColor(index, color) }
-                AcquisitionSettingsPage { acquisitionConfig: window.acquisitionConfig; configurationRevision: window.acquisitionConfigRevision; simulationRunning: window.simulationRunning || recorderBackend.recording; onApplyRequested: config => window.applyAcquisitionConfiguration(config) }
-                RecordingPage { recorder: recorderBackend; sampleRate: window.simulationSampleRate; enabledChannelCount: window.enabledAcquisitionChannels; acquisitionMode: window.acquisitionConfig.mode; simulationRunning: window.simulationRunning; channelIds: window.enabledChannelIds(); onStartRecordingRequested: window.startRecording() }
-                SystemStatusPage { simulationRunning: window.simulationRunning; sampleRate: window.simulationSampleRate; acquisitionMode: window.acquisitionConfig.mode; enabledChannelCount: window.enabledAcquisitionChannels; enabledBoardCount: window.acquisitionConfig.boardEnabled.filter(value => value).length }
+                AcquisitionSettingsPage { acquisitionConfig: window.acquisitionConfig; capabilityBackend: acquisitionBackend; configurationRevision: window.acquisitionConfigRevision; simulationRunning: window.simulationRunning || recorderBackend.recording; onApplyRequested: config => window.applyAcquisitionConfiguration(config); onStopAndApplyRequested: config => { if (window.simulationRunning) window.stopSimulation(); window.applyAcquisitionConfiguration(config) } }
+                RecordingPage { recorder: recorderBackend; sampleRate: window.simulationGenerationRate; enabledChannelCount: window.enabledAcquisitionChannels; acquisitionMode: window.acquisitionConfig.mode; simulationRunning: window.simulationRunning; channelIds: window.enabledChannelIds(); onStartRecordingRequested: window.startRecording() }
+                SystemStatusPage { simulationRunning: window.simulationRunning; simulationGenerationRate: window.simulationGenerationRate; displayRefreshRate: window.displayRefreshRate; estimatedHardwareThroughput: window.estimatedHardwareThroughput(); estimatedSimulationThroughput: window.estimatedSimulationThroughput(); acquisitionMode: window.acquisitionConfig.mode; enabledChannelCount: window.enabledAcquisitionChannels; enabledBoardCount: window.acquisitionConfig.boardEnabled.filter(value => value).length }
                 }
                 Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 94; color: "#121d27"; border.color: "#314252"
                     ColumnLayout { anchors.fill: parent; anchors.margins: 8; spacing: 3
@@ -346,7 +402,7 @@ ApplicationWindow {
             // Keep the parameter controls in their own continuous right column.
             // It shares the full height of the central workspace and event log,
             // eliminating the otherwise unused lower-right rectangle.
-            ParameterPanel { visible: window.currentPage === "realtime"; Layout.preferredWidth: visible ? 270 : 0; Layout.fillHeight: true; channelStore: dataStore; selectedChannelIndex: window.selectedChannelIndex; timePerDivMs: window.timePerDivMs; horizontalStepSeconds: window.horizontalStepSeconds; displayMode: window.displayMode; gridVisible: window.gridVisible; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.historyOffsetSeconds; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); onSelectedChannelRequested: index => window.setSelectedChannel(index); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onGridVisibleRequested: value => window.setGridVisible(value); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetPositions() }
+            ParameterPanel { visible: window.currentPage === "realtime"; Layout.preferredWidth: visible ? 270 : 0; Layout.fillHeight: true; channelStore: dataStore; selectedChannelIndex: window.selectedChannelIndex; timePerDivMs: window.timePerDivMs; horizontalStepSeconds: window.horizontalStepSeconds; displayMode: window.displayMode; interpolationMode: window.interpolationMode; interpolationAvailable: realtimeWaveform.interpolationAvailable; gridVisible: window.gridVisible; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.sharedHistoryOffset; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); onSelectedChannelRequested: index => window.setSelectedChannel(index); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onInterpolationModeRequested: mode => window.interpolationMode = mode; onGridVisibleRequested: value => window.setGridVisible(value); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetPositions() }
         }
     }
 }

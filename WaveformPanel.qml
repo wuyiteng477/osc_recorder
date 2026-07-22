@@ -11,29 +11,46 @@ Rectangle {
 
     required property bool activePage
     required property var channelStore
+    required property var realtimeData
     required property int selectedChannelIndex
     required property bool simulationRunning
     required property string displayMode
     required property bool gridVisible
     required property real timePerDivMs
-    required property real latestSampleTime
-    required property real historyOffsetSeconds
+    required property real sharedWindowStart
+    required property real sharedWindowEnd
+    required property real sharedLatestTime
+    required property real sharedHistoryOffset
     required property real samplePeriodSeconds
+    required property string interpolationMode
     property bool waveformLabelsVisible: true
+    property var displaySnapshot: ({ channels: [], mode: "raw", sampleCount: 0, samplesPerPixel: 0 })
+    readonly property bool interpolationAvailable: displaySnapshot.mode === "raw" && Number(displaySnapshot.samplesPerPixel) < 0.5
     signal selectedChannelRequested(int index)
     signal startRequested(); signal stopRequested(); signal verticalFitRequested(); signal resetPositionsRequested(); signal clearHistoryRequested()
-    readonly property real visibleTimeSeconds: timePerDivMs * 10 / 1000
-    readonly property bool reviewingHistory: historyOffsetSeconds > 1e-9
+    readonly property real visibleTimeSeconds: sharedWindowEnd - sharedWindowStart
+    readonly property bool reviewingHistory: sharedHistoryOffset > 1e-9
     readonly property bool usesHistory: reviewingHistory || displayMode === "roll"
     readonly property var activeChannels: channelStore.activeViewChannels()
     readonly property int activeViewCount: Math.max(1, activeChannels.length)
 
     function formatNumber(value) { return Number(value).toFixed(1).replace(/\.0$/, "") }
     function formatTime(value) { return Math.abs(value) < 1 ? formatNumber(value * 1000) + " ms" : formatNumber(value) + " s" }
-    function schedulePaint() { if (activePage && waveformCanvas.width > 0 && waveformCanvas.height > 0) waveformCanvas.requestPaint() }
+    function schedulePaint() {
+        if (!activePage || waveformCanvas.width <= 0 || waveformCanvas.height <= 0)
+            return
+        // The C++ backend creates one immutable, shared, compact snapshot for
+        // this paint.  No channel-specific raw-buffer lookup happens in QML.
+        realtimeData.refreshDisplaySnapshot(sharedWindowStart, sharedWindowEnd,
+                                            1 / samplePeriodSeconds, Math.floor(waveformCanvas.width), activeChannels)
+        displaySnapshot = realtimeData.displaySnapshot
+        waveformCanvas.requestPaint()
+    }
 
-    onLatestSampleTimeChanged: schedulePaint()
-    onHistoryOffsetSecondsChanged: schedulePaint()
+    onSharedWindowStartChanged: schedulePaint()
+    onSharedWindowEndChanged: schedulePaint()
+    onSharedLatestTimeChanged: schedulePaint()
+    onSharedHistoryOffsetChanged: schedulePaint()
     onTimePerDivMsChanged: schedulePaint()
     onDisplayModeChanged: schedulePaint()
     onGridVisibleChanged: schedulePaint()
@@ -43,9 +60,12 @@ Rectangle {
     Connections {
         target: root.channelStore
 
-        function onSampleRevisionChanged() { root.schedulePaint() }
-        function onFrameRevisionChanged() { root.schedulePaint() }
         function onRevisionChanged() { root.schedulePaint() }
+    }
+
+    Connections {
+        target: root.realtimeData
+        function onHistoryChanged() { root.schedulePaint() }
     }
 
     component ActionButton: AppButton { implicitHeight: 30 }
@@ -76,49 +96,6 @@ Rectangle {
             }
         }
 
-        Flickable {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 28
-            contentWidth: legendRow.width
-            contentHeight: height
-            clip: true
-            interactive: contentWidth > width
-            boundsBehavior: Flickable.StopAtBounds
-
-            Row {
-                id: legendRow
-                width: implicitWidth
-                height: parent.height
-                spacing: 6
-
-                Repeater {
-                    model: root.activeChannels
-
-                    delegate: AppButton {
-                        id: legend
-                        required property int index
-                        readonly property int channelIndex: root.activeChannels[index]
-                        readonly property var info: root.channelStore.channel(channelIndex)
-                        text: info.name + "  " + root.formatNumber(info.voltsPerDiv) + " V/div"
-                        implicitHeight: 26
-                        selected: root.selectedChannelIndex === legend.channelIndex
-                        fillColor: "#172e39"
-                        selectedFillColor: "#17313a"
-                        borderColor: "#365467"
-                        selectedBorderColor: legend.info.color
-                        textColor: legend.info.color
-                        selectedTextColor: legend.info.color
-
-                        onClicked: root.selectedChannelRequested(channelIndex)
-                    }
-                }
-            }
-
-            ScrollBar.horizontal: ScrollBar {
-                policy: ScrollBar.AsNeeded
-            }
-        }
-
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -142,9 +119,9 @@ Rectangle {
                         return
 
                     const viewHeight = height / root.activeChannels.length, divWidth = width / 10
-                    const end = root.latestSampleTime - root.historyOffsetSeconds, start = end - root.visibleTimeSeconds
-                    const first = root.channelStore.firstLogicalIndexAtOrAfter(start)
-                    const last = root.channelStore.lastLogicalIndexAtOrBefore(end)
+                    // One C++ snapshot per display frame, shared by CH1–CH8.
+                    const snapshot = root.displaySnapshot
+                    const snapshotChannels = snapshot.channels || []
 
                     for (let viewIndex = 0; viewIndex < root.activeChannels.length; ++viewIndex) {
                         const channelIndex = root.activeChannels[viewIndex], data = root.channelStore.channel(channelIndex), top = viewIndex * viewHeight, divisionHeight = viewHeight / 4
@@ -180,82 +157,76 @@ Rectangle {
 
                         context.strokeStyle = data.color
                         context.lineWidth = 1.35
+                        // Each channel owns an isolated drawing viewport.  This
+                        // protects adjacent waveforms even for large manual
+                        // offsets or a transiently oversized signal.
+                        context.save()
+                        context.beginPath()
+                        context.rect(0, top + 1, width, Math.max(0, viewHeight - 2))
+                        context.clip()
                         context.beginPath()
                         let drew = false
 
                         function yFor(value) { return top + viewHeight / 2 - (value + data.verticalOffsetV) * (divisionHeight / data.voltsPerDiv) }
                         function point(value, x) { const y = yFor(value); if (!drew) { context.moveTo(x, y); drew = true } else context.lineTo(x, y) }
 
-                        const sampleCount = Math.max(0, last - first + 1); let envelopeMinimums = undefined, envelopeMaximums = undefined, envelopeColumns = 0
-                        if (sampleCount <= Math.max(1, Math.floor(width))) {
-                            // Preserve every acquired point when there are fewer samples than pixels.
-                            for (let logical = first; logical <= last; ++logical) {
-                                const buffer = (root.channelStore.historyStartIndex + logical) % root.channelStore.historyCapacity
-                                const value = root.channelStore.historyValue(channelIndex, buffer)
-                                if (value !== undefined)
-                                    point(value, (root.channelStore.historyTimes[buffer] - start) / root.visibleTimeSeconds * width)
-                            }
-                        } else {
-                            // Do not use a fixed stride: it aliases high-frequency channels.  Keep the
-                            // min/max envelope for each pixel column, with X derived from sample time.
-                            const columns = Math.max(1, Math.floor(width)), minimums = new Array(columns), maximums = new Array(columns)
-
-                            for (let logical = first; logical <= last; ++logical) {
-                                const buffer = (root.channelStore.historyStartIndex + logical) % root.channelStore.historyCapacity
-                                const value = root.channelStore.historyValue(channelIndex, buffer)
-
-                                if (value === undefined)
-                                    continue
-
-                                const x = (root.channelStore.historyTimes[buffer] - start) / root.visibleTimeSeconds * width
-                                const column = Math.max(0, Math.min(columns - 1, Math.floor(x)))
-
-                                if (minimums[column] === undefined || value < minimums[column])
-                                    minimums[column] = value
-                                if (maximums[column] === undefined || value > maximums[column])
-                                    maximums[column] = value
-                            }
-
-                            // The connected centre trace keeps the waveform visually continuous;
-                            // the min/max stroke below preserves high-frequency extrema.
-                            for (let column = 0; column < columns; ++column) {
-                                if (minimums[column] !== undefined) {
-                                    const x = (column + .5) / columns * width
-                                    point((minimums[column] + maximums[column]) / 2, x)
+                        const series = snapshotChannels[viewIndex] || ({ points: [] })
+                        const points = series.points || []
+                        let previousX = 0, previousY = 0, havePrevious = false
+                        // Interpolation is meaningful only when true samples
+                        // are farther apart than two pixels (spp < 0.5).  At
+                        // normal density we always connect adjacent original
+                        // samples directly, regardless of the selected mode.
+                        const pointsOnly = root.interpolationAvailable && root.interpolationMode === "none"
+                        if (pointsOnly)
+                            context.fillStyle = data.color
+                        for (let pointIndex = 0; pointIndex + 1 < points.length; pointIndex += 2) {
+                            const x = points[pointIndex], value = points[pointIndex + 1]
+                            if (!isFinite(x) || !isFinite(value)) { havePrevious = false; continue }
+                            const y = yFor(value)
+                            if (pointsOnly) {
+                                // A real filled pixel marker remains visible at
+                                // low timebases; a near-zero stroke is removed
+                                // by Canvas anti-aliasing on high-DPI displays.
+                                context.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2)
+                            } else if (!havePrevious) {
+                                context.moveTo(x, y)
+                            } else if (root.interpolationAvailable && root.interpolationMode === "step") {
+                                context.lineTo(x, previousY); context.lineTo(x, y)
+                            } else if (root.interpolationAvailable && root.interpolationMode === "sine") {
+                                // Half-cosine easing is a bounded sine-family
+                                // interpolation between two real samples.  The
+                                // segment count is capped so sparse data never
+                                // expands into an unbounded display array.
+                                const segments = Math.max(2, Math.min(8, Math.ceil(Math.abs(x - previousX) / 8)))
+                                for (let segment = 1; segment <= segments; ++segment) {
+                                    const ratio = segment / segments
+                                    const eased = (1 - Math.cos(Math.PI * ratio)) / 2
+                                    context.lineTo(previousX + (x - previousX) * ratio,
+                                                   previousY + (y - previousY) * eased)
                                 }
+                            } else {
+                                // Auto and linear use only adjacent real samples. Envelope points
+                                // already arrive in true min/max sample order from C++.
+                                context.lineTo(x, y)
                             }
-
-                            envelopeMinimums = minimums
-                            envelopeMaximums = maximums
-                            envelopeColumns = columns
+                            previousX = x; previousY = y; havePrevious = true; drew = true
                         }
+                        if (drew && !pointsOnly) context.stroke()
+                        context.restore()
 
-                        if (drew)
-                            context.stroke()
-
-                        if (envelopeColumns > 0) {
-                            context.globalAlpha = .55
-                            context.beginPath()
-
-                            for (let column = 0; column < envelopeColumns; ++column) {
-                                if (envelopeMinimums[column] !== undefined) {
-                                    const x = (column + .5) / envelopeColumns * width
-                                    context.moveTo(x, yFor(envelopeMinimums[column]))
-                                    context.lineTo(x, yFor(envelopeMaximums[column]))
-                                }
-                            }
-
-                            context.stroke()
-                            context.globalAlpha = 1
-                        }
-
-                        const latestBuffer = root.channelStore.historyCount ? (root.channelStore.historyStartIndex + root.channelStore.historyCount - 1) % root.channelStore.historyCapacity : 0
-                        const current = root.channelStore.historyValue(channelIndex, latestBuffer) || 0
+                        const current = points.length >= 2 ? points[points.length - 1] : 0
 
                         context.fillStyle = data.color
                         context.font = "12px sans-serif"
                         if (root.waveformLabelsVisible)
                             context.fillText(data.name + "  " + root.formatNumber(current) + " V  " + root.formatNumber(data.voltsPerDiv) + " V/div", 8, top + 15)
+
+                        if (channelIndex === root.selectedChannelIndex) {
+                            context.strokeStyle = data.color
+                            context.lineWidth = 1
+                            context.strokeRect(.5, top + .5, width - 1, Math.max(0, viewHeight - 1))
+                        }
 
                         context.strokeStyle = "#365467"
                         context.beginPath()
@@ -263,6 +234,19 @@ Rectangle {
                         context.lineTo(width, top + viewHeight)
                         context.stroke()
                     }
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                enabled: root.activeChannels.length > 0
+                hoverEnabled: true
+                cursorShape: containsMouse ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: mouse => {
+                    const viewHeight = waveformCanvas.height / root.activeChannels.length
+                    const canvasY = mouse.y - waveformCanvas.y
+                    const viewIndex = Math.max(0, Math.min(root.activeChannels.length - 1, Math.floor(canvasY / viewHeight)))
+                    root.selectedChannelRequested(root.activeChannels[viewIndex])
                 }
             }
 
@@ -278,7 +262,7 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.bottom: parent.bottom
                 anchors.margins: 10
-                text: root.formatTime(-root.historyOffsetSeconds - root.visibleTimeSeconds)
+                text: root.formatTime(-root.sharedHistoryOffset - root.visibleTimeSeconds)
                 color: "#8fa3b4"
                 font.pixelSize: 12
             }
@@ -296,7 +280,7 @@ Rectangle {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.margins: 10
-                text: root.formatTime(-root.historyOffsetSeconds)
+                text: root.formatTime(-root.sharedHistoryOffset)
                 color: "#8fa3b4"
                 font.pixelSize: 12
             }

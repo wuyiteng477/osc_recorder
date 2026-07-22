@@ -15,7 +15,11 @@
 
 ## Acquisition configuration
 
-The acquisition settings page immediately applies sample rate, continuous/burst mode, eight-board bulk selection, and CH1-CH64 acquisition-channel changes while stopped. `Main.qml` retains the applied configuration shared by simulation, waveform, system status, and top status. Sample rate changes the batch size of the sole 20 ms acquisition Timer; burst mode writes a 100 ms batch every fifth tick. Acquisition can use all 64 channels while display remains independently capped at eight waveforms. Configuration changes, start, stop, and validation failures are logged.
+`AcquisitionBackend` owns the board capability table. The acquisition-settings page has no free-form sample-rate input and does not hard-code a numeric range: every board/group selects only a rate returned by `ratesForBoard()`. The current conservative table is explicitly marked as pending hardware confirmation and deliberately contains no unverified 5 M or 50 M S/s production tier. Replace that C++ table with firmware-reported capabilities when physical boards are connected.
+
+Hardware board rate, simulation-generation rate, display refresh rate and `time/div` are independent. Each enabled board has a per-channel hardware rate; the UI reports `hardware estimated throughput` as the sum of `enabled channels per board × board rate × 4 bytes`. It separately reports `simulation-generation throughput` as `all enabled channels × simulation stress rate × 4 bytes`. The simulation-only stress-rate selector is provided by a separate backend list and is clearly labelled as non-hardware capability. The sole simulator timer is paced by a fixed 50 FPS display refresh policy; its batch sample count derives only from the separate simulation-generation rate. `time/div` only changes the visible waveform time window.
+
+While acquisition or recording is active, settings changes are staged only. The explicit “stop and apply” action safely stops acquisition (and an active recording), then applies the staged board rates, mode and channel selection. Configuration application, start, stop and validation failures continue to be logged. Acquisition can use all 64 channels while display remains independently capped at eight waveforms.
 
 ## Simulated recording and portable storage
 
@@ -27,9 +31,24 @@ The theoretical acquisition rate is `sampleRate × enabledChannels × 4 bytes`. 
 
 Clicking the real-time waveform navigation item expands **History Playback**. The single **Open Recording** action opens a local session-directory picker; the backend finds `session.json`, `waveform.bin`, and `index.csv` automatically. `PlaybackBackend` requires `formatVersion: 2`, `finalStatus: completed`, little-endian `float32`, explicit channel identifiers, `waveform.bin`, and `index.csv`. It compares JSON and raw-file sizes, checks index order and payload lengths, then reads every block header and CRC/commit marker sequentially for validation. Playback keeps only the index metadata in memory; waveform points are decoded from float32 interleaved blocks that intersect the active time window, never by loading the complete raw data file at once. The page is independent of `ChannelStore` and the acquisition timer. Its compact main page shows only sample rate, recorded-channel total, data duration, file size/gaps, and a **Select Channels N/8** action. The in-page selection popup groups choices by eight-channel boards; unrecorded boards/channels are disabled, while selection remains a draft until **Apply and Close**. The first eight recorded channels are selected by default, at most eight can be selected, and each selected channel owns exactly one dynamically sized view. “Recorded channel total” always means the number stored in the file, whereas “currently displayed N/8” means the independently selected playback views. Pan, zoom, and reset apply one shared time window to every selected view. Missing files, unsupported versions, incomplete sessions, index mismatches, CRC errors, and an empty display selection are reported explicitly. The CSV time-column UI is hidden; its recording-side interface remains reserved for a later export feature.
 
+## Real-time waveform cache and adaptive rendering
+
+`RealtimeDataBackend` owns real-time simulated generation, the fixed-capacity raw ring buffer and all display decimation; `ChannelStore.qml` now contains only channel metadata and presentation settings. A single acquisition call appends one common sample-index range for all enabled channels. The backend incrementally updates fixed-capacity 4× min/max levels (raw, 4, 16, 64 … samples per bucket) as each new block arrives. It never rescans a full raw history on a display frame.
+
+Every frame creates one immutable shared display snapshot for all visible channels. `displayDuration = timePerDiv × 10`, `visibleSampleCount = sampleRate × displayDuration`, and `samplesPerPixel = visibleSampleCount / plotWidth` select the rendering form: at `samplesPerPixel >= 2` the closest min/max level supplies at most about two true-time-ordered extrema per pixel; at lower densities the backend supplies only real raw points. QML receives only this compact current-window snapshot and Canvas draws it once, without per-channel timers or raw-history traversal.
+
+The display refresh remains a fixed 50 FPS and is independent from acquisition rate. Left/right/reset/roll alter only the shared window state. The display control provides interpolation `自动 / 无 / 线性 / 方波 / 正弦`; it affects raw-point joining only, never the C++ cache, recorder, playback, or export data. “方波” holds the previous sample until the next sample; “正弦” uses a bounded half-cosine connection between adjacent real samples. Invalid or absent samples are not joined.
+
 ## Waveform timebase and anti-aliasing
 
 Waveform rendering reads the fixed-capacity history buffer using each sample's timestamp, not a current sample-rate-derived index or a display-frame-generated signal. Changing ms/div only changes the visible time window; it does not reset time, phase, history, or the signal generator. When the visible sample count fits the Canvas width, every raw point is drawn. Larger windows use a min/max envelope per pixel column, preventing the fixed-stride aliasing that previously made high-frequency channels appear as false low-frequency or beat signals. Changing timebase records a fixed 100 ms zero-crossing frequency check for enabled CH1-CH8 in the runtime log.
+
+Continuous simulation batching follows elapsed monotonic time, not a hard-coded display-frame duration. Each batch is still sampled with fixed `dt = 1 / simulationRate`; the 50 FPS display only decides when accumulated samples are painted. This prevents the UI cadence itself from deterministically re-sampling different channels at channel-dependent phase intervals.
+
+Real-time horizontal navigation has exactly one shared window in `Main.qml`: `sharedWindowStart`, `sharedWindowEnd`, `sharedLatestTime`, and `sharedHistoryOffset`. Left/right/reset/roll only modify that shared state. Each C++ acquisition append records one common sample-index range before iterating enabled channels. `RealtimeDataBackend` derives all snapshot X coordinates from that common index and fixed `dt = 1 / sampleRate`; one horizontal move therefore advances exactly `time/div × sampleRate` samples (one grid division) for every visible curve, without accumulated floating-point time-to-pixel drift.
+
+For views with more samples than pixel columns, the renderer draws the true min/max envelope for each shared X column. It never uses a fixed stride, so high-frequency CH6–CH8 do not acquire a false low-frequency or beat waveform merely because the display is zoomed out.
+
 
 ## Real-time waveform revision (2026-07-20)
 
@@ -370,3 +389,14 @@ Canvas 不再从逻辑索引 0 扫描整个环形缓冲。它根据 `historyStar
 `enabled` 决定某通道是否继续产生新模拟样本；`visible` 决定其是否绘制；`selectedChannelIndex` 仅决定右侧参数编辑对象。右侧顶部的 CH1–CH4 按钮专门切换 `visible`：显示一个隐藏通道时会同时选中它，隐藏当前通道时会优先切换到其余可见通道。顶部图例完全根据可见通道模型生成；点击图例只切换当前编辑通道，不隐藏波形。已停用但仍可见的通道会以降低透明度显示保留历史。
 
 默认仅显示 CH1。无可见通道时，波形区提示“请选择要显示的通道”；有可见通道但尚无样本时提示“等待模拟采集数据”。实时工作区维持深色背景、动态通道图例、状态栏、单 Canvas 四通道绘制与底部操作按钮的一致视觉层次。
+## 历史回放数据导出
+
+历史回放页的“导出数据”按钮会弹出导出设置窗口，不改变当前回放通道、时间窗口、`time/div` 或垂直显示状态。可选范围为“当前时间窗口”或“全部记录”，通道集合为“当前显示的通道”或“全部录制通道”。本轮支持 CSV、Float32+JSON 与 MAT v5；HDF5 的格式接口预留给后续实现。
+
+CSV 适合在表格工具、脚本和数据分析软件中直接查看：第一列为从本次录制开始计算的 `relative_time_s`，后续列依次为 `CH1`、`CH2` 等通道的采样值。
+
+Float32+JSON 适合高效交换大规模波形数据：`.f32` 文件以纯二进制模式创建、截断并写入 little-endian float32 的“样本优先、通道交织”数据，不经过文本或换行转换；同名 `.json` 记录采样率、通道名称与单位、字节序、数据排列方式、导出起止时间、样本数和数据字节数。导出结束后会复读文件，校验 `样本数 × 通道数 × 4` 的字节数并检查所有值都为有限 float32。默认文件名由录制会话目录名、导出时间范围和格式扩展名构成；保存位置通过 Qt 的 `FileDialog` 选择，并由 C++ 使用 `QUrl::toLocalFile()` 处理，因此不依赖 Windows 盘符或 Linux 挂载路径。
+
+MAT 导出使用 MATLAB v5 兼容格式，可以直接通过 MATLAB 的 `load`读取。文件包含 `time` 列向量（录制起点相对时间，双精度）、每路 `CH1`、`CH2` 等列向量（单精度）、`sampleRate`、`rangeStartSeconds`、`rangeEndSeconds`、`channelNames` 和 `channelUnits`。其中通道名称与单位为 MATLAB char 矩阵，每行对应一路通道。写入按时间数组和每路通道分段进行，每次仅读取一个录制块，不会一次性加载全部录制文件。导出结束后内部校验 MAT v5 文件头、变量名、类型、维度、通道样本数以及无限数值。
+
+导出后端按 `index.csv` 的块顺序逐块校验并读取 `waveform.bin`，每次仅写出一个数据块后返回事件循环；不会一次性加载整份录制文件，适用于 Windows 和 RK3588/Linux ARM64 的大文件导出。

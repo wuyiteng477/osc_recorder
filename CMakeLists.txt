@@ -24,6 +24,10 @@ qt_add_qml_module(apposc_recorder
     SOURCES
   RecorderBackend.cpp
   RecorderBackend.h
+  AcquisitionBackend.cpp
+  AcquisitionBackend.h
+  RealtimeDataBackend.cpp
+  RealtimeDataBackend.h
   PlaybackBackend.cpp
   PlaybackBackend.h
     QML_FILES

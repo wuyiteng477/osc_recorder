@@ -5,7 +5,10 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     required property bool simulationRunning
-    required property int sampleRate
+    required property int simulationGenerationRate
+    required property int displayRefreshRate
+    required property real estimatedHardwareThroughput
+    required property real estimatedSimulationThroughput
     required property string acquisitionMode
     required property int enabledChannelCount
     required property int enabledBoardCount
@@ -36,8 +39,26 @@ Rectangle {
         }
 
         Label {
-            text: qsTr("已应用采样率: ") + root.sampleRate + qsTr(" S/s")
+            text: qsTr("模拟生成率: ") + root.simulationGenerationRate + qsTr(" S/s（与硬件采样率分离）")
             color: "#d9e4ec"
+            font.pixelSize: 16
+        }
+
+        Label {
+            text: qsTr("显示刷新率: ") + root.displayRefreshRate + qsTr(" FPS（固定）")
+            color: "#d9e4ec"
+            font.pixelSize: 16
+        }
+
+        Label {
+            text: qsTr("硬件预计总吞吐量: ") + root.estimatedHardwareThroughput.toFixed(0) + qsTr(" B/s")
+            color: "#d9e4ec"
+            font.pixelSize: 16
+        }
+
+        Label {
+            text: qsTr("模拟生成吞吐量: ") + root.estimatedSimulationThroughput.toFixed(0) + qsTr(" B/s")
+            color: "#35d19b"
             font.pixelSize: 16
         }
 
