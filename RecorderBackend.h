@@ -37,14 +37,14 @@ public:
     Q_INVOKABLE void setRecordingParameters(int sampleRate, int enabledChannels);
     Q_INVOKABLE void refreshStorage();
     Q_INVOKABLE bool startRecording(int sampleRate, const QVariantList &channelIds, const QString &acquisitionMode, bool acquisitionRunning);
-    Q_INVOKABLE void enqueueSimulatedBlock(double startTimeSeconds, int sampleCount);
+    void enqueueRawSampleBlock(double startTimeSeconds, const QByteArray &payload, bool hasGap);
     Q_INVOKABLE void stopRecording();
 signals:
     void saveDirectoryChanged(); void storageChanged(); void recordingStateChanged(); void eventLogged(const QString &message, const QString &level);
 private slots:
     void flushPendingBlocks();
 private:
-    struct Block { double startTime = 0; quint64 firstSample = 0; quint32 count = 0; };
+    struct Block { double startTime = 0; quint64 firstSample = 0; quint32 count = 0; QByteArray payload; bool hasGap = false; };
     bool prepareDirectory(QString *reason); bool writeBlock(const Block &block); bool validateIndex(QString *reason); quint32 crc32(const QByteArray &data) const; void writeSessionMetadata(); void setStatus(const QString &value, const QString &detail = {}); void writeLog(const QString &line);
     QString m_saveDirectory, m_sessionDirectory, m_temporarySessionDirectory, m_currentFileName, m_status = QStringLiteral("not_ready"), m_statusDetail, m_createdAt, m_finishedAt, m_acquisitionMode;
     qint64 m_totalBytes = 0, m_availableBytes = 0, m_theoreticalBytesPerSecond = 0, m_simulatedFileBytes = 0, m_recordedMilliseconds = 0;

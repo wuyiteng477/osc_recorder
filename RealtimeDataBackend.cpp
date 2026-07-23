@@ -1,6 +1,8 @@
 #include "RealtimeDataBackend.h"
 
 #include <QtMath>
+#include <QDataStream>
+#include <QIODevice>
 #include <QRandomGenerator>
 #include <algorithm>
 #include <cmath>
@@ -148,9 +150,9 @@ void RealtimeDataBackend::markGapLevels(quint64 sampleIndex, int channelIndex)
 void RealtimeDataBackend::appendSimulatedSamples(double startTime, double sampleInterval, int count, const QVariantList &enabledChannels)
 {
     if (count <= 0 || sampleInterval <= 0.0) return;
-    // Single-trigger display capture owns this fixed history generation until
-    // the user re-arms. Main.qml still advances acquisition and recording.
-    if (m_displayHistoryFrozen) return;
+    // Single-trigger capture freezes only display history.  The raw source
+    // still advances so recording and source-side trigger detection continue.
+    const bool retainDisplayHistory = !m_displayHistoryFrozen;
     // A fixed-dt ring and its min/max hierarchy cannot safely mix rates.
     // Switch generations before the first new-rate sample rather than
     // interpreting old timestamps with the new rate.
@@ -168,6 +170,14 @@ void RealtimeDataBackend::appendSimulatedSamples(double startTime, double sample
             enabled.push_back(index);
         }
     }
+    QByteArray recordingPayload;
+    bool blockHasGap = false;
+    QDataStream recordingStream(&recordingPayload, QIODevice::WriteOnly);
+    if (m_recordingBlockPublishing) {
+        recordingPayload.reserve(count * int(enabled.size()) * int(sizeof(float)));
+        recordingStream.setByteOrder(QDataStream::LittleEndian);
+        recordingStream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    }
     for (int offset = 0; offset < count; ++offset) {
         const quint64 index = m_nextSample++;
         const quint64 slot = index % Capacity;
@@ -179,9 +189,13 @@ void RealtimeDataBackend::appendSimulatedSamples(double startTime, double sample
         for (const int channel : enabled) {
             bool valid = true;
             const float value = applySimulationEvents(index, channel, valueFor(channel, index), &valid);
+            if (m_recordingBlockPublishing)
+                recordingStream << (valid ? value : std::numeric_limits<float>::quiet_NaN());
             if (valid) {
-                m_raw[channel][slot] = value;
-                updateLevels(index, channel, value);
+                if (retainDisplayHistory) {
+                    m_raw[channel][slot] = value;
+                    updateLevels(index, channel, value);
+                }
                 const float previous = m_triggerPrevious[channel];
                 // This deliberately observes the raw post-simulation sample only;
                 // it never consults the event list to create a trigger result.
@@ -191,16 +205,23 @@ void RealtimeDataBackend::appendSimulatedSamples(double startTime, double sample
                 evaluateEdgeTrigger(index, channel, value, true);
             } else {
                 validMask &= ~(quint64(1) << channel);
-                markGapLevels(index, channel);
+                blockHasGap = true;
+                if (retainDisplayHistory) markGapLevels(index, channel);
                 m_triggerPrevious[channel] = std::numeric_limits<float>::quiet_NaN();
                 evaluateEdgeTrigger(index, channel, value, false);
             }
         }
-        m_validMasks[slot] = validMask;
-        m_historyCount = std::min<quint64>(Capacity, m_historyCount + 1);
+        if (retainDisplayHistory) {
+            m_validMasks[slot] = validMask;
+            m_historyCount = std::min<quint64>(Capacity, m_historyCount + 1);
+        }
     }
-    ++m_dataRevision;
-    emit historyChanged();
+    if (m_recordingBlockPublishing && recordingStream.status() == QDataStream::Ok)
+        emit rawSampleBlockReady(startTime, recordingPayload, blockHasGap);
+    if (retainDisplayHistory) {
+        ++m_dataRevision;
+        emit historyChanged();
+    }
 }
 
 void RealtimeDataBackend::configureSimulationEvents(const QString &mode)
@@ -210,6 +231,11 @@ void RealtimeDataBackend::configureSimulationEvents(const QString &mode)
         return;
     m_eventMode = normalized;
     resetEventSchedule();
+}
+
+void RealtimeDataBackend::setRecordingBlockPublishing(bool enabled)
+{
+    m_recordingBlockPublishing = enabled;
 }
 
 void RealtimeDataBackend::configureEdgeTrigger(int channelIndex, const QString &edge, double level, double hysteresis, const QString &mode)

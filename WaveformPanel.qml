@@ -15,6 +15,8 @@ Rectangle {
     required property var realtimeData
     required property int selectedChannelIndex
     required property bool simulationRunning
+    required property bool manualDisplayPaused
+    required property bool singleTriggerFrozen
     required property string displayMode
     required property bool gridVisible
     required property real timePerDivMs
@@ -32,7 +34,7 @@ Rectangle {
     property var displaySnapshot: ({ channels: [], mode: "raw", sampleCount: 0, samplesPerPixel: 0 })
     readonly property bool interpolationAvailable: displaySnapshot.mode === "raw" && Number(displaySnapshot.samplesPerPixel) < 0.5
     signal selectedChannelRequested(int index)
-    signal startRequested(); signal stopRequested(); signal verticalFitRequested(); signal resetPositionsRequested(); signal clearHistoryRequested()
+    signal startRequested(); signal stopRequested(); signal manualDisplayPauseRequested(); signal verticalFitRequested(); signal resetPositionsRequested(); signal clearHistoryRequested()
     readonly property real visibleTimeSeconds: sharedWindowEnd - sharedWindowStart
     readonly property bool reviewingHistory: sharedHistoryOffset > 1e-9
     readonly property bool usesHistory: reviewingHistory || displayMode === "roll"
@@ -95,8 +97,8 @@ Rectangle {
             }
 
             Label {
-                text: root.simulationRunning ? qsTr("\u91c7\u96c6\u4e2d") : qsTr("\u5df2\u505c\u6b62")
-                color: root.simulationRunning ? "#35d19b" : "#8fa3b4"
+                text: root.manualDisplayPaused ? qsTr("\u663e\u793a\u5df2\u6682\u505c") : root.simulationRunning ? qsTr("\u91c7\u96c6\u4e2d") : qsTr("\u5df2\u505c\u6b62")
+                color: root.manualDisplayPaused ? "#e8a94b" : root.simulationRunning ? "#35d19b" : "#8fa3b4"
                 font.bold: true
             }
         }
@@ -280,6 +282,18 @@ Rectangle {
             }
 
             Label {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 10
+                visible: root.manualDisplayPaused
+                text: qsTr("\u663e\u793a\u5df2\u6682\u505c")
+                color: "#f3c56b"
+                font.pixelSize: 12
+                font.bold: true
+                z: 2
+            }
+
+            Label {
                 anchors.centerIn: parent
                 visible: root.activeChannels.length === 0
                 text: qsTr("\u8bf7\u5728\u901a\u9053\u8bbe\u7f6e\u4e2d\u542f\u7528\u901a\u9053")
@@ -331,6 +345,15 @@ Rectangle {
                 enabled: root.simulationRunning
                 fillColor: "#a1514d"
                 onClicked: root.stopRequested()
+            }
+
+            Item { Layout.preferredWidth: 8 }
+
+            ActionButton {
+                text: root.manualDisplayPaused ? qsTr("\u7ee7\u7eed\u663e\u793a") : qsTr("\u6682\u505c\u663e\u793a")
+                enabled: root.simulationRunning && !root.singleTriggerFrozen
+                fillColor: root.manualDisplayPaused ? "#168b7c" : "#294556"
+                onClicked: root.manualDisplayPauseRequested()
             }
 
             ActionButton {

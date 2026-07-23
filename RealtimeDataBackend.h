@@ -4,6 +4,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QString>
+#include <QByteArray>
 #include <QtQmlIntegration/qqmlintegration.h>
 #include <array>
 #include <limits>
@@ -29,6 +30,7 @@ public:
 
     Q_INVOKABLE void appendSimulatedSamples(double startTime, double sampleInterval, int count, const QVariantList &enabledChannels);
     Q_INVOKABLE void configureSimulationEvents(const QString &mode);
+    Q_INVOKABLE void setRecordingBlockPublishing(bool enabled);
     Q_INVOKABLE QVariantList simulatedEvents() const;
     Q_INVOKABLE void configureEdgeTrigger(int channelIndex, const QString &edge, double level, double hysteresis, const QString &mode);
     Q_INVOKABLE void rearmEdgeTrigger();
@@ -42,6 +44,7 @@ signals:
     void historyChanged();
     void displaySnapshotChanged();
     void simulationEventOccurred(const QVariantMap &event);
+    void rawSampleBlockReady(double startTime, const QByteArray &payload, bool hasGap);
     void rawTriggerDetected(const QVariantMap &trigger);
     void edgeTriggerDetected(const QVariantMap &trigger);
 
@@ -103,4 +106,5 @@ private:
     bool m_edgeTriggerArmed = true;
     bool m_singleTriggerCaptured = false;
     bool m_displayHistoryFrozen = false;
+    bool m_recordingBlockPublishing = false;
 };

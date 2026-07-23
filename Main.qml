@@ -25,6 +25,10 @@ ApplicationWindow {
     property real timePerDivMs: 1.0
     property real sharedHistoryOffset: 0
     property bool followLatest: true
+    // Manual display pause freezes only the shared viewport.  Acquisition,
+    // recording and the C++ history buffers continue to advance normally.
+    property bool manualDisplayPaused: false
+    property real manualPausedWindowStart: 0
     property real sampleTimeSeconds: 0
     property real latestSampleTime: 0
     property int triggerChannelIndex: 0
@@ -69,11 +73,11 @@ ApplicationWindow {
     readonly property real visibleTimeSeconds: timePerDivMs * 10 / 1000
     readonly property real horizontalStepSeconds: timePerDivMs / 1000
     readonly property real sharedLatestTime: latestSampleTime
-    readonly property real sharedWindowEnd: triggerWindowLocked ? triggerWindowStartSeconds + visibleTimeSeconds : sharedLatestTime - sharedHistoryOffset
-    readonly property real sharedWindowStart: triggerWindowLocked ? triggerWindowStartSeconds : sharedWindowEnd - visibleTimeSeconds
+    readonly property real sharedWindowEnd: manualDisplayPaused ? manualPausedWindowStart + visibleTimeSeconds : triggerWindowLocked ? triggerWindowStartSeconds + visibleTimeSeconds : sharedLatestTime - sharedHistoryOffset
+    readonly property real sharedWindowStart: manualDisplayPaused ? manualPausedWindowStart : triggerWindowLocked ? triggerWindowStartSeconds : sharedWindowEnd - visibleTimeSeconds
     readonly property bool singleTriggerFrozen: triggerEnabled && triggerMode === "single" && triggerWindowLocked && !triggerCollecting
-    readonly property bool historyLeftAvailable: singleTriggerFrozen ? triggerWindowStartSeconds > singleCaptureStartTime + 1e-9 : hasSimulationData && sharedHistoryOffset < maximumHistoryOffset() - 1e-9
-    readonly property bool historyRightAvailable: singleTriggerFrozen ? triggerWindowStartSeconds + visibleTimeSeconds < singleCaptureEndTime - 1e-9 : sharedHistoryOffset > 1e-9
+    readonly property bool historyLeftAvailable: singleTriggerFrozen ? triggerWindowStartSeconds > singleCaptureStartTime + 1e-9 : manualDisplayPaused ? manualPausedWindowStart > historyStartTime + 1e-9 : hasSimulationData && sharedHistoryOffset < maximumHistoryOffset() - 1e-9
+    readonly property bool historyRightAvailable: singleTriggerFrozen ? triggerWindowStartSeconds + visibleTimeSeconds < singleCaptureEndTime - 1e-9 : manualDisplayPaused ? manualPausedWindowStart + visibleTimeSeconds < latestSampleTime - 1e-9 : sharedHistoryOffset > 1e-9
     // ChannelStore fills its ListModel during Component.onCompleted.  Depend on
     // its revision as well as the index so CH1 is refreshed after that first
     // initialization; otherwise it can remain an undefined stale value until
@@ -88,6 +92,7 @@ ApplicationWindow {
     AcquisitionBackend { id: acquisitionBackend }
     RealtimeDataBackend {
         id: realtimeData
+        objectName: "realtimeDataBackend"
         onSimulationEventOccurred: event => window.appendLog(
             "\u6a21\u62df\u4e8b\u4ef6 #" + event.eventId + " " + event.eventType + "\uff1aCH" + event.channelId
                 + "\uff0c\u6837\u672c " + event.startSampleIndex + "\uff0c\u6301\u7eed " + event.durationSamples + " \u70b9\uff0c\u5e45\u503c " + event.amplitude + "\uff0c\u79cd\u5b50 " + event.randomSeed,
@@ -102,6 +107,8 @@ ApplicationWindow {
     SystemInfoBackend { id: systemInfo }
     RecorderBackend {
         id: recorderBackend
+        objectName: "recorderBackend"
+        onRecordingStateChanged: realtimeData.setRecordingBlockPublishing(recording)
         onEventLogged: (message, level) => window.appendLog(message, message, level)
     }
     PlaybackBackend {
@@ -153,6 +160,10 @@ ApplicationWindow {
     }
 
     function completeTriggerCapture() {
+        // A trigger capture owns the viewport after it completes.  This is a
+        // different state from manual display pause and must be re-armed via
+        // the trigger workflow rather than the display-resume button.
+        manualDisplayPaused = false
         triggerWindowStartSeconds = pendingTriggerTime - visibleTimeSeconds * triggerPosition
         triggerWindowLocked = true
         triggerCollecting = false
@@ -244,8 +255,6 @@ ApplicationWindow {
 
         const interval = 1 / simulationGenerationRate
         realtimeData.appendSimulatedSamples(sampleTimeSeconds, interval, count, enabledChannelIds())
-        if (recorderBackend.recording)
-            recorderBackend.enqueueSimulatedBlock(sampleTimeSeconds, count)
         latestSampleTime = sampleTimeSeconds + (count - 1) * interval
         sampleTimeSeconds += count * interval
 
@@ -257,7 +266,12 @@ ApplicationWindow {
             followLatest = true
         }
 
-        if (followLatest)
+        if (manualDisplayPaused) {
+            // A fixed viewport may eventually age out of the finite ring
+            // buffer.  Move it only when its oldest data is no longer valid.
+            if (manualPausedWindowStart < historyStartTime)
+                manualPausedWindowStart = historyStartTime
+        } else if (followLatest)
             sharedHistoryOffset = 0
         else {
             sharedHistoryOffset = Math.min(maximumHistoryOffset(), sharedHistoryOffset + count * interval)
@@ -508,6 +522,8 @@ ApplicationWindow {
             // The trigger remains at its configured horizontal position while
             // the timebase changes; the capture anchor itself never moves.
             triggerWindowStartSeconds = pendingTriggerTime - visibleTimeSeconds * triggerPosition
+        } else if (manualDisplayPaused) {
+            manualPausedWindowStart = center - visibleTimeSeconds / 2
         } else if (triggerWindowLocked) {
             triggerWindowStartSeconds = center - visibleTimeSeconds / 2
         } else if (wasFollowing) {
@@ -527,6 +543,10 @@ ApplicationWindow {
             triggerWindowUserPanned = triggerWindowUserPanned || before !== triggerWindowStartSeconds
             return
         }
+        if (manualDisplayPaused) {
+            manualPausedWindowStart = Math.max(historyStartTime, manualPausedWindowStart - step)
+            return
+        }
         const before = sharedHistoryOffset, stepSamples = Math.max(1, Math.round(step * simulationGenerationRate)); sharedHistoryOffset += stepSamples / simulationGenerationRate; clampOffset(); if (before !== sharedHistoryOffset) appendLog("历史位置移动至 " + formatDuration(sharedHistoryOffset) + "（" + stepSamples + " 样本 / 1 div）", "History moved to " + formatDuration(sharedHistoryOffset) + " (" + stepSamples + " samples / 1 div)")
     }
     function moveHistoryRight() {
@@ -537,15 +557,48 @@ ApplicationWindow {
             triggerWindowUserPanned = triggerWindowUserPanned || before !== triggerWindowStartSeconds
             return
         }
+        if (manualDisplayPaused) {
+            manualPausedWindowStart = Math.min(latestSampleTime - visibleTimeSeconds, manualPausedWindowStart + step)
+            return
+        }
         if (sharedHistoryOffset <= 1e-9) return; const stepSamples = Math.max(1, Math.round(step * simulationGenerationRate)); sharedHistoryOffset -= stepSamples / simulationGenerationRate; clampOffset(); appendLog(followLatest ? "已回到最新采样" : "历史位置移动至 " + formatDuration(sharedHistoryOffset) + "（" + stepSamples + " 样本 / 1 div）", followLatest ? "Returned to latest samples" : "History moved to " + formatDuration(sharedHistoryOffset) + " (" + stepSamples + " samples / 1 div)")
     }
     function changeDisplayMode(mode) { if (displayMode !== mode) { displayMode = mode; appendLog(mode === "roll" ? "滚动模式已启用" : "更新模式已启用", mode === "roll" ? "Scroll mode enabled" : "Update mode enabled") } }
     function setGridVisible(value) { if (gridVisible !== value) { gridVisible = value; appendLog(value ? "网格已显示" : "网格已隐藏", value ? "Grid shown" : "Grid hidden") } }
-    function startSimulation() { if (!simulationRunning) { const error = validateAcquisitionConfiguration(acquisitionConfig); if (error.length) { appendLog("配置校验失败：" + error, "Configuration validation failed: " + error, "ERROR"); return } simulationTick = 0; simulationSampleRemainder = 0; lastSimulationTickMs = Date.now(); simulationRunning = true; appendSimulationSamples(samplesForDuration(acquisitionConfig.mode === "burst" ? 100 : 1)); appendLog("模拟采集已启动：模拟生成 " + simulationGenerationRate + " S/s，" + enabledAcquisitionChannels + " 路，" + (acquisitionConfig.mode === "burst" ? "突发模式" : "连续模式") + "。", "Simulation started: " + simulationGenerationRate + " S/s, " + enabledAcquisitionChannels + " channels, " + acquisitionConfig.mode + " mode.") } }
-    function stopSimulation() { if (simulationRunning) { simulationRunning = false; lastSimulationTickMs = 0; if (recorderBackend.recording) { appendLog("采集已停止，正在安全停止录制。", "Acquisition stopped; safely stopping recording.", "NOTICE"); recorderBackend.stopRecording() } appendLog("模拟采集已停止。", "Simulation stopped.") } }
-    function clearHistory() { realtimeData.clearHistory(); triggerWindowLocked = false; triggerCollecting = false; triggerAutoReleaseTime = -1; triggerSampleIndex = -1; sharedHistoryOffset = 0; followLatest = true; appendLog("64 通道历史缓存已清除", "64-channel history cleared") }
+    function toggleManualDisplayPause() {
+        if (!simulationRunning || singleTriggerFrozen) return
+        if (manualDisplayPaused) {
+            manualDisplayPaused = false
+            sharedHistoryOffset = 0
+            followLatest = true
+            appendLog("显示已恢复到最新实时窗口", "Display resumed at latest real-time window")
+        } else {
+            manualPausedWindowStart = sharedWindowStart
+            manualDisplayPaused = true
+            followLatest = false
+            appendLog("显示已暂停；采集和录制继续运行", "Display paused; acquisition and recording continue")
+        }
+    }
+    function startSimulation() { if (!simulationRunning) { const error = validateAcquisitionConfiguration(acquisitionConfig); if (error.length) { appendLog("配置校验失败：" + error, "Configuration validation failed: " + error, "ERROR"); return } manualDisplayPaused = false; simulationTick = 0; simulationSampleRemainder = 0; lastSimulationTickMs = Date.now(); simulationRunning = true; appendSimulationSamples(samplesForDuration(acquisitionConfig.mode === "burst" ? 100 : 1)); appendLog("模拟采集已启动：模拟生成 " + simulationGenerationRate + " S/s，" + enabledAcquisitionChannels + " 路，" + (acquisitionConfig.mode === "burst" ? "突发模式" : "连续模式") + "。", "Simulation started: " + simulationGenerationRate + " S/s, " + enabledAcquisitionChannels + " channels, " + acquisitionConfig.mode + " mode.") } }
+    function stopSimulation() { if (simulationRunning) { manualDisplayPaused = false; simulationRunning = false; lastSimulationTickMs = 0; if (recorderBackend.recording) { appendLog("采集已停止，正在安全停止录制。", "Acquisition stopped; safely stopping recording.", "NOTICE"); recorderBackend.stopRecording() } appendLog("模拟采集已停止。", "Simulation stopped.") } }
+    function clearHistory() { realtimeData.clearHistory(); manualDisplayPaused = false; triggerWindowLocked = false; triggerCollecting = false; triggerAutoReleaseTime = -1; triggerSampleIndex = -1; sharedHistoryOffset = 0; followLatest = true; appendLog("64 通道历史缓存已清除", "64-channel history cleared") }
     function verticalFit() { const data = selectedChannel, rangeData = realtimeData.channelRange(selectedChannelIndex, sharedWindowStart, sharedWindowEnd); const min = rangeData.minimum, max = rangeData.maximum; if (!rangeData.valid) { appendLog(data.name + " 没有可用于垂直拟合的采样", data.name + " has no samples for vertical fit", "NOTICE"); return } const p2p = Math.max(.001, max - min), ranges = [.2, .5, 1, 2, 5]; let range = 5; for (let i = 0; i < ranges.length; ++i) if (p2p <= ranges[i] * 3.2) { range = ranges[i]; break } dataStore.setRole(selectedChannelIndex, "voltsPerDiv", range); dataStore.setRole(selectedChannelIndex, "verticalOffsetV", Math.max(-5, Math.min(5, -(max + min) / 2))); appendLog(data.name + " 已应用垂直拟合（保留边界）", data.name + " vertical fit applied with viewport margin") }
-    function resetPositions() { const data = selectedChannel; if (!data) return; const changed = data.verticalOffsetV !== data.defaultOffsetV || !followLatest; dataStore.setRole(selectedChannelIndex, "verticalOffsetV", data.defaultOffsetV); if (singleTriggerFrozen) { triggerWindowStartSeconds = pendingTriggerTime - visibleTimeSeconds * triggerPosition; triggerWindowUserPanned = false } else { sharedHistoryOffset = 0; followLatest = true } if (changed) appendLog(data.name + " 位置已重置", data.name + " position reset") }
+    function resetHistoryPosition() {
+        if (singleTriggerFrozen) {
+            triggerWindowStartSeconds = pendingTriggerTime - visibleTimeSeconds * triggerPosition
+            triggerWindowUserPanned = false
+        } else if (manualDisplayPaused) {
+            // Keep manual pause active, but make its frozen viewport represent
+            // the newest available window.  It must not be controlled through
+            // sharedHistoryOffset while manual pause owns the window.
+            manualPausedWindowStart = latestSampleTime - visibleTimeSeconds
+        } else {
+            sharedHistoryOffset = 0
+            followLatest = true
+        }
+        appendLog("水平位置已归零", "Horizontal position reset")
+    }
+    function resetPositions() { const data = selectedChannel; if (!data) return; const changed = data.verticalOffsetV !== data.defaultOffsetV || !followLatest || manualDisplayPaused; dataStore.setRole(selectedChannelIndex, "verticalOffsetV", data.defaultOffsetV); resetHistoryPosition(); if (changed) appendLog(data.name + " 位置已重置", data.name + " position reset") }
 
     ListModel { id: logModel }
     // Display refresh stays independent from generated sample rate and time/div.
@@ -564,7 +617,7 @@ ApplicationWindow {
             NavigationPanel { Layout.preferredWidth: window.width < 1160 ? 140 : 176; Layout.minimumWidth: 120; Layout.fillHeight: true; currentPage: window.currentPage; onPageRequested: page => { if (window.currentPage !== page) { window.currentPage = page; window.appendLog("已打开 " + page + " 页面", "Opened " + page + " page") } } }
             ColumnLayout { Layout.fillWidth: true; Layout.minimumWidth: 440; Layout.fillHeight: true; spacing: 0
                 StackLayout { Layout.fillWidth: true; Layout.fillHeight: true; currentIndex: ["realtime", "playback", "channels", "acquisition", "recording", "system"].indexOf(window.currentPage)
-                WaveformPanel { id: realtimeWaveform; activePage: window.currentPage === "realtime"; channelStore: dataStore; realtimeData: realtimeData; selectedChannelIndex: window.selectedChannelIndex; simulationRunning: window.simulationRunning; displayMode: window.displayMode; gridVisible: window.gridVisible; timePerDivMs: window.timePerDivMs; sharedWindowStart: window.sharedWindowStart; sharedWindowEnd: window.sharedWindowEnd; sharedLatestTime: window.sharedLatestTime; sharedHistoryOffset: window.sharedHistoryOffset; samplePeriodSeconds: 1 / window.simulationGenerationRate; interpolationMode: window.interpolationMode; triggerFrameVisible: window.triggerWindowLocked; triggerTimeSeconds: window.pendingTriggerTime; triggerChannelIndex: window.triggerChannelIndex; triggerLevel: window.triggerLevel; onSelectedChannelRequested: index => window.setSelectedChannel(index); onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
+                WaveformPanel { id: realtimeWaveform; activePage: window.currentPage === "realtime"; channelStore: dataStore; realtimeData: realtimeData; selectedChannelIndex: window.selectedChannelIndex; simulationRunning: window.simulationRunning; manualDisplayPaused: window.manualDisplayPaused; singleTriggerFrozen: window.singleTriggerFrozen; displayMode: window.displayMode; gridVisible: window.gridVisible; timePerDivMs: window.timePerDivMs; sharedWindowStart: window.sharedWindowStart; sharedWindowEnd: window.sharedWindowEnd; sharedLatestTime: window.sharedLatestTime; sharedHistoryOffset: window.sharedHistoryOffset; samplePeriodSeconds: 1 / window.simulationGenerationRate; interpolationMode: window.interpolationMode; triggerFrameVisible: window.triggerWindowLocked; triggerTimeSeconds: window.pendingTriggerTime; triggerChannelIndex: window.triggerChannelIndex; triggerLevel: window.triggerLevel; onSelectedChannelRequested: index => window.setSelectedChannel(index); onStartRequested: window.startSimulation(); onStopRequested: window.stopSimulation(); onManualDisplayPauseRequested: window.toggleManualDisplayPause(); onVerticalFitRequested: window.verticalFit(); onResetPositionsRequested: window.resetPositions(); onClearHistoryRequested: window.clearHistory() }
                 PlaybackPage { playback: playbackBackend }
                 ChannelSettingsPage { channelStore: dataStore; onChannelNameRequested: (index, name) => window.setChannelName(index, name); onChannelVisibleRequested: (index, value) => window.setChannelVisible(index, value); onChannelColorRequested: (index, color) => window.setChannelColor(index, color) }
                 AcquisitionSettingsPage { acquisitionConfig: window.acquisitionConfig; capabilityBackend: acquisitionBackend; configurationRevision: window.acquisitionConfigRevision; simulationRunning: window.simulationRunning || recorderBackend.recording; onApplyRequested: config => window.applyAcquisitionConfiguration(config); onStopAndApplyRequested: config => { if (window.simulationRunning) window.stopSimulation(); window.applyAcquisitionConfiguration(config) } }
@@ -593,7 +646,7 @@ ApplicationWindow {
             // Keep the parameter controls in their own continuous right column.
             // It shares the full height of the central workspace and event log,
             // eliminating the otherwise unused lower-right rectangle.
-            ParameterPanel { visible: window.currentPage === "realtime"; Layout.preferredWidth: visible ? (window.width < 1160 ? 220 : 270) : 0; Layout.minimumWidth: visible ? 210 : 0; Layout.fillHeight: true; channelStore: dataStore; selectedChannelIndex: window.selectedChannelIndex; timePerDivMs: window.timePerDivMs; horizontalStepSeconds: window.horizontalStepSeconds; displayMode: window.displayMode; interpolationMode: window.interpolationMode; interpolationAvailable: realtimeWaveform.interpolationAvailable; gridVisible: window.gridVisible; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.sharedHistoryOffset; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); historyLeftAvailable: window.historyLeftAvailable; historyRightAvailable: window.historyRightAvailable; triggerChannelIndex: window.triggerChannelIndex; triggerEdge: window.triggerEdge; triggerLevel: window.triggerLevel; triggerHysteresis: window.triggerHysteresis; triggerMode: window.triggerMode; triggerSampleIndex: window.triggerSampleIndex; triggerEnabled: window.triggerEnabled; triggerPosition: window.triggerPosition; onSelectedChannelRequested: index => window.setSelectedChannel(index); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onInterpolationModeRequested: mode => window.interpolationMode = mode; onGridVisibleRequested: value => window.setGridVisible(value); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetPositions(); onEdgeTriggerRequested: (channel, edge, level, hysteresis, mode) => window.setEdgeTrigger(channel, edge, level, hysteresis, mode); onEdgeTriggerRearmRequested: window.rearmEdgeTrigger(); onEdgeTriggerEnabledRequested: enabled => window.setEdgeTriggerEnabled(enabled); onTriggerPositionRequested: value => { window.triggerPosition = value; window.triggerWindowLocked = false; window.triggerCollecting = false; window.triggerSampleIndex = -1; window.realtimeData.rearmEdgeTrigger() } }
+            ParameterPanel { visible: window.currentPage === "realtime"; Layout.preferredWidth: visible ? (window.width < 1160 ? 220 : 270) : 0; Layout.minimumWidth: visible ? 210 : 0; Layout.fillHeight: true; channelStore: dataStore; selectedChannelIndex: window.selectedChannelIndex; timePerDivMs: window.timePerDivMs; horizontalStepSeconds: window.horizontalStepSeconds; displayMode: window.displayMode; interpolationMode: window.interpolationMode; interpolationAvailable: realtimeWaveform.interpolationAvailable; gridVisible: window.gridVisible; hasSimulationData: window.hasSimulationData; historyOffsetSeconds: window.sharedHistoryOffset; maximumHistoryOffsetSeconds: window.maximumHistoryOffset(); historyLeftAvailable: window.historyLeftAvailable; historyRightAvailable: window.historyRightAvailable; triggerChannelIndex: window.triggerChannelIndex; triggerEdge: window.triggerEdge; triggerLevel: window.triggerLevel; triggerHysteresis: window.triggerHysteresis; triggerMode: window.triggerMode; triggerSampleIndex: window.triggerSampleIndex; triggerEnabled: window.triggerEnabled; triggerPosition: window.triggerPosition; onSelectedChannelRequested: index => window.setSelectedChannel(index); onVoltsPerDivRequested: value => window.setVoltsPerDiv(value); onTimePerDivRequested: value => window.setTimePerDiv(value); onVerticalOffsetRequested: value => window.setVerticalOffset(value); onDisplayModeRequested: mode => window.changeDisplayMode(mode); onInterpolationModeRequested: mode => window.interpolationMode = mode; onGridVisibleRequested: value => window.setGridVisible(value); onMoveHistoryLeftRequested: window.moveHistoryLeft(); onMoveHistoryRightRequested: window.moveHistoryRight(); onResetHistoryPositionRequested: window.resetHistoryPosition(); onEdgeTriggerRequested: (channel, edge, level, hysteresis, mode) => window.setEdgeTrigger(channel, edge, level, hysteresis, mode); onEdgeTriggerRearmRequested: window.rearmEdgeTrigger(); onEdgeTriggerEnabledRequested: enabled => window.setEdgeTriggerEnabled(enabled); onTriggerPositionRequested: value => { window.triggerPosition = value; window.triggerWindowLocked = false; window.triggerCollecting = false; window.triggerSampleIndex = -1; window.realtimeData.rearmEdgeTrigger() } }
         }
     }
 }

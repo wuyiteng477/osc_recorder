@@ -1,6 +1,7 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include "RecorderBackend.h"
+#include "RealtimeDataBackend.h"
 
 int main(int argc, char *argv[])
 {
@@ -15,6 +16,16 @@ int main(int argc, char *argv[])
         []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
     engine.loadFromModule("osc_recorder", "Main");
+
+    if (!engine.rootObjects().isEmpty()) {
+        QObject *root = engine.rootObjects().constFirst();
+        auto *realtime = root->findChild<RealtimeDataBackend *>("realtimeDataBackend");
+        auto *recorder = root->findChild<RecorderBackend *>("recorderBackend");
+        if (realtime && recorder)
+            QObject::connect(realtime, &RealtimeDataBackend::rawSampleBlockReady,
+                             recorder, &RecorderBackend::enqueueRawSampleBlock,
+                             Qt::DirectConnection);
+    }
 
     return QGuiApplication::exec();
 }
