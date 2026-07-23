@@ -513,6 +513,155 @@ QVariantMap RealtimeDataBackend::channelRange(int channel, double start, double 
     return {{"minimum", minimum}, {"maximum", maximum}, {"valid", std::isfinite(minimum)}};
 }
 
+QVariantMap RealtimeDataBackend::measureWindow(int channel, double startTime, double endTime,
+                                               const QString &thresholdMode, double threshold,
+                                               double hysteresis, const QString &edge) const
+{
+    QVariantMap result{{"valid", false}, {"periodValid", false}, {"reason", QStringLiteral("data-insufficient")}};
+    if (channel < 0 || channel >= ChannelCount || m_historyCount == 0 || endTime <= startTime)
+        return result;
+
+    const quint64 first = firstSampleIndexAtOrAfter(startTime);
+    const quint64 last = lastSampleIndexAtOrBefore(endTime);
+    // Do not present partial startup/aged-out windows as a valid measurement.
+    if (last < first || first < m_nextSample - m_historyCount || last >= m_nextSample || last - first + 1 < 8)
+        return result;
+
+    double sum = 0.0, sumSquares = 0.0;
+    float minimum = std::numeric_limits<float>::infinity();
+    float maximum = -std::numeric_limits<float>::infinity();
+    quint64 count = 0;
+    bool hasGap = false;
+    for (quint64 index = first; index <= last; ++index) {
+        const float value = valueAt(channel, index);
+        // NaN marks a simulated/recorded interruption.  A measurement must
+        // never silently bridge it into a false edge period.  Amplitude
+        // statistics can still use the finite samples on either side.
+        if (!std::isfinite(value)) {
+            hasGap = true;
+            continue;
+        }
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+        sum += value;
+        sumSquares += double(value) * value;
+        ++count;
+    }
+    if (count < 8) {
+        result.insert("reason", hasGap ? QStringLiteral("gap") : QStringLiteral("data-insufficient"));
+        return result;
+    }
+
+    const double mean = sum / double(count);
+    result.insert("valid", true);
+    result.insert("maximum", maximum);
+    result.insert("minimum", minimum);
+    result.insert("peakToPeak", double(maximum) - minimum);
+    result.insert("mean", mean);
+    result.insert("rms", std::sqrt(sumSquares / double(count)));
+    result.insert("hasGap", hasGap);
+    result.insert("reason", hasGap ? QStringLiteral("gap") : QStringLiteral("period-unavailable"));
+
+    // Edge period/frequency uses one threshold plus hysteresis.  Low/middle/
+    // high thresholds belong to future rise/fall-time measurements and are
+    // intentionally not reused here.
+    const double span = double(maximum) - minimum;
+    if (!std::isfinite(span) || span <= 1e-9) {
+        result.insert("reason", QStringLiteral("threshold-not-crossed"));
+        return result;
+    }
+    const bool automatic = thresholdMode != QStringLiteral("manual");
+    const double middle = automatic ? (double(minimum) + maximum) * .5 : threshold;
+    const double effectiveHysteresis = automatic ? span * 0.05 : std::max(0.0, hysteresis);
+    if (!std::isfinite(middle) || !std::isfinite(effectiveHysteresis)
+            || middle - effectiveHysteresis * .5 < minimum
+            || middle + effectiveHysteresis * .5 > maximum) {
+        result.insert("reason", QStringLiteral("invalid-threshold"));
+        return result;
+    }
+    result.insert("threshold", middle);
+    result.insert("thresholdHysteresis", effectiveHysteresis);
+
+    // A time measurement is never allowed to bridge a missing-data interval.
+    // Amplitude results above remain valid because they use finite samples.
+    if (hasGap) {
+        result.insert("reason", QStringLiteral("gap"));
+        return result;
+    }
+
+    // A discontinuity resets the edge detector and the preceding crossing.
+    // We may still measure a complete period inside any later continuous
+    // segment, but never form a period that crosses a missing-data interval.
+    std::vector<double> periods;
+    float previous = std::numeric_limits<float>::quiet_NaN();
+    bool hasPrevious = false;
+    double previousCrossing = std::numeric_limits<double>::quiet_NaN();
+    const bool falling = edge == QStringLiteral("falling");
+    const double lowerArm = middle - effectiveHysteresis * .5;
+    const double upperArm = middle + effectiveHysteresis * .5;
+    const double crossingLevel = middle;
+    bool armed = false;
+    for (quint64 index = first; index <= last; ++index) {
+        const float current = valueAt(channel, index);
+        if (!std::isfinite(current)) {
+            hasPrevious = false;
+            armed = false;
+            previousCrossing = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        if (!hasPrevious) {
+            previous = current;
+            hasPrevious = true;
+            armed = falling ? current >= upperArm : current <= lowerArm;
+            continue;
+        }
+        if ((!falling && current <= lowerArm) || (falling && current >= upperArm))
+            armed = true;
+        const bool crossed = !falling
+                ? (armed && previous < crossingLevel && current >= crossingLevel)
+                : (armed && previous > crossingLevel && current <= crossingLevel);
+        if (crossed) {
+            const double span = double(current) - previous;
+            const double fraction = std::abs(span) > 1e-12 ? (crossingLevel - previous) / span : 0.0;
+            const double crossing = timeAt(index - 1) + std::clamp(fraction, 0.0, 1.0) * m_sampleInterval;
+            if (std::isfinite(previousCrossing))
+                periods.push_back(crossing - previousCrossing);
+            previousCrossing = crossing;
+            armed = false;
+        }
+        previous = current;
+    }
+    // Three same-direction edges (two adjacent periods) are the minimum
+    // required to reject a one-off transition or a mixed edge pair.
+    if (periods.size() < 2) {
+        result.insert("reason", QStringLiteral("insufficient-edges"));
+        return result;
+    }
+
+    double periodSum = 0.0;
+    for (const double value : periods)
+        periodSum += value;
+    const double period = periodSum / double(periods.size());
+    if (!std::isfinite(period) || period <= 0.0) {
+        result.insert("reason", QStringLiteral("period-unavailable"));
+        return result;
+    }
+    double variance = 0.0;
+    for (const double value : periods) {
+        const double delta = value - period;
+        variance += delta * delta;
+    }
+    const double relativeDeviation = std::sqrt(variance / double(periods.size())) / period;
+    if (relativeDeviation > 0.08) {
+        result.insert("reason", QStringLiteral("period-inconsistent"));
+        return result;
+    }
+    result.insert("periodValid", true);
+    result.insert("period", period);
+    result.insert("frequency", 1.0 / period);
+    return result;
+}
+
 void RealtimeDataBackend::resetHistoryStorage()
 {
     m_displayHistoryFrozen = false;

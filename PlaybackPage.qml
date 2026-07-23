@@ -11,6 +11,7 @@ Rectangle {
     property string selectionMessage: ""
     property int selectedPlaybackChannelId: -1
     property var channelViewSettings: ({})
+    property var automaticMeasurement: ({ valid: false, periodValid: false })
     property bool waveformLabelsVisible: true
     property bool exportWholeRecord: false
     property bool exportAllRecordedChannels: false
@@ -56,6 +57,15 @@ Rectangle {
     function setViewSettings(id, voltsPerDiv, verticalOffsetV) { const next = Object.assign({}, channelViewSettings); next[id] = { voltsPerDiv: voltsPerDiv, verticalOffsetV: verticalOffsetV }; channelViewSettings = next; canvas.requestPaint() }
     function selectPlaybackChannel(id) { selectedPlaybackChannelId = id; canvas.requestPaint() }
     function selectedSettings() { return viewSettings(selectedPlaybackChannelId) }
+    function selectedFrameIndex() { for (let index = 0; index < playback.frames.length; ++index) if (playback.frames[index].id === selectedPlaybackChannelId) return index; return 0 }
+    function measuredVoltage(key) { const value = Number(automaticMeasurement[key]); return automaticMeasurement.valid && isFinite(value) ? Number(value).toFixed(3).replace(/\.000$/, "") + " V" : "--" }
+    function measuredPeriod() { const value = Number(automaticMeasurement.period); return automaticMeasurement.periodValid && isFinite(value) ? (value < 1 ? (value * 1000).toFixed(3) + " ms" : value.toFixed(6) + " s") : "--" }
+    function measuredFrequency() { const value = Number(automaticMeasurement.frequency); return automaticMeasurement.periodValid && isFinite(value) ? (value < 1000 ? value.toFixed(3) + " Hz" : (value / 1000).toFixed(3) + " kHz") : "--" }
+    function refreshAutomaticMeasurement() {
+        automaticMeasurement = selectedPlaybackChannelId >= 0
+                ? playback.measureWindow(selectedPlaybackChannelId, playback.viewStartSeconds, playback.viewStartSeconds + playback.viewDurationSeconds)
+                : ({ valid: false, periodValid: false })
+    }
     function resetSelectedVertical() { if (selectedPlaybackChannelId >= 0) setViewSettings(selectedPlaybackChannelId, 1.0, 0.0) }
     function moveSelectedVertical(delta) { if (selectedPlaybackChannelId >= 0) { const settings = selectedSettings(); setViewSettings(selectedPlaybackChannelId, settings.voltsPerDiv, settings.verticalOffsetV + delta) } }
     function setSelectedVoltsPerDiv(value) { if (selectedPlaybackChannelId >= 0) { const settings = selectedSettings(); setViewSettings(selectedPlaybackChannelId, value, settings.verticalOffsetV) } }
@@ -89,6 +99,7 @@ Rectangle {
         return "t_" + start.toFixed(4).replace(".", "_") + "s_to_" + end.toFixed(4).replace(".", "_") + "s"
     }
     function openExportSettings() { exportTargetUrl = playback.suggestedExportUrl(exportRangeTag(), exportFormat); exportSettings.open() }
+    onSelectedPlaybackChannelIdChanged: refreshAutomaticMeasurement()
 
     FolderDialog { id: folderDialog; title: qsTr("\u9009\u62e9\u5f55\u5236\u4f1a\u8bdd\u76ee\u5f55"); onAccepted: root.playback.loadSessionUrl(selectedFolder) }
     FileDialog {
@@ -210,6 +221,7 @@ Rectangle {
                     function onChanged() {
                         if (!playback.frames.some(frame => frame.id === root.selectedPlaybackChannelId) && playback.frames.length)
                             root.selectedPlaybackChannelId = playback.frames[0].id
+                        root.refreshAutomaticMeasurement()
                         canvas.requestPaint()
                     }
                 }
@@ -270,6 +282,20 @@ Rectangle {
                         ctx.restore()
                     }
                 }
+            }
+            RowLayout {
+                visible: playback.status === "ready" && root.selectedPlaybackChannelId >= 0
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: canvas.y + root.selectedFrameIndex() * canvas.height / Math.max(1, playback.frames.length) + 7
+                z: 3
+                spacing: 12
+                Label { text: "Max " + root.measuredVoltage("maximum"); color: "#d9e4ec"; font.pixelSize: 11 }
+                Label { text: "Min " + root.measuredVoltage("minimum"); color: "#d9e4ec"; font.pixelSize: 11 }
+                Label { text: "Vpp " + root.measuredVoltage("peakToPeak"); color: "#d9e4ec"; font.pixelSize: 11 }
+                Label { text: "Avg " + root.measuredVoltage("mean"); color: "#d9e4ec"; font.pixelSize: 11 }
+                Label { text: "RMS " + root.measuredVoltage("rms"); color: "#d9e4ec"; font.pixelSize: 11 }
+                Label { text: "T " + root.measuredPeriod(); color: "#d9e4ec"; font.pixelSize: 11 }
+                Label { text: "f " + root.measuredFrequency(); color: "#d9e4ec"; font.pixelSize: 11 }
             }
             MouseArea {
                 anchors.fill: parent

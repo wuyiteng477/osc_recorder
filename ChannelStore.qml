@@ -39,6 +39,7 @@ QtObject {
                     signalFrequencyHz: 125 + (channelId % 16) * 47,
                     signalAmplitudeV: .55 + (channelId % 5) * .12,
                     signalPhase: channelId * .37,
+                    engineeringUnit: "V",
                     connectionStatus: "Simulation"
                 })
             }

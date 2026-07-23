@@ -25,12 +25,19 @@ Rectangle {
     required property int triggerSampleIndex
     required property bool triggerEnabled
     required property real triggerPosition
+    required property string cursorMode
+    required property real timeCursor1
+    required property real timeCursor2
+    required property real voltageCursor1
+    required property real voltageCursor2
     signal selectedChannelRequested(int index)
     signal voltsPerDivRequested(real value)
     signal timePerDivRequested(real value)
     signal verticalOffsetRequested(real value)
     signal displayModeRequested(string value)
     signal interpolationModeRequested(string value)
+    signal cursorModeRequested(string value)
+    signal measurementPanelRequested()
     signal gridVisibleRequested(bool value)
     signal moveHistoryLeftRequested()
     signal moveHistoryRightRequested()
@@ -66,6 +73,8 @@ Rectangle {
     border.color: "#314252"
 
     function num(value) { return Number(value).toFixed(1).replace(/\.0$/, "") }
+    function cursorTime(value) { return Math.abs(value) < 1 ? Number(value * 1000).toFixed(3) + " ms" : Number(value).toFixed(6) + " s" }
+    function cursorFrequency(value) { return Math.abs(value) < 1000 ? Math.abs(value).toFixed(3) + " Hz" : (Math.abs(value) / 1000).toFixed(3) + " kHz" }
 
     // 各分区标题样式统一，方便后续增减设置项。
     component Section: Label {
@@ -377,17 +386,46 @@ Rectangle {
             enabled: root.interpolationAvailable
             onActivated: root.interpolationModeRequested(["auto", "none", "linear", "step", "sine"][currentIndex])
             contentItem: Text {
-                leftPadding: 10
+                // ComboBox reserves space for its indicator on the right.
+                // Compensate half of that reserve so the caption is centred
+                // against the complete control rather than only its content area.
+                leftPadding: 20
+                rightPadding: 0
                 text: qsTr("插值：") + interpolationBox.currentText
                 color: interpolationBox.enabled ? "#d9e4ec" : "#71818d"
+                horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
             }
             background: Rectangle { color: interpolationBox.enabled ? "#223542" : "#18242d"; radius: 3; border.color: interpolationBox.enabled ? "#365467" : "#314252" }
         }
 
-        Item {
-            Layout.fillHeight: true
+        ComboBox {
+            id: cursorModeBox
+            Layout.fillWidth: true
+            implicitHeight: 32
+            model: [qsTr("关闭"), qsTr("垂直光标"), qsTr("水平光标"), qsTr("水平-垂直光标")]
+            currentIndex: ({ off: 0, time: 1, voltage: 2, both: 3 })[root.cursorMode]
+            onActivated: root.cursorModeRequested(["off", "time", "voltage", "both"][currentIndex])
+            contentItem: Text {
+                leftPadding: 20
+                rightPadding: 0
+                text: qsTr("光标：") + cursorModeBox.currentText
+                color: "#d9e4ec"
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle { color: "#223542"; radius: 3; border.color: "#365467" }
         }
+
+        AppButton {
+            Layout.fillWidth: true
+            implicitHeight: 32
+            text: qsTr("测量任务")
+            onClicked: root.measurementPanelRequested()
+        }
+
+        Item { Layout.fillHeight: true }
+
     }
 
     Dialog {

@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QtQmlIntegration/qqmlintegration.h>
 
 class PlaybackBackend : public QObject
@@ -45,6 +46,7 @@ public:
     Q_INVOKABLE void setView(double startSeconds, double durationSeconds);
     Q_INVOKABLE void moveView(double seconds);
     Q_INVOKABLE void resetView();
+    Q_INVOKABLE QVariantMap measureWindow(int zeroBasedChannelId, double startSeconds, double endSeconds);
     Q_INVOKABLE QUrl suggestedExportUrl(const QString &rangeTag, const QString &format) const;
     Q_INVOKABLE bool beginDataExport(const QUrl &outputUrl, bool wholeRecord, bool allRecordedChannels, const QString &format);
 

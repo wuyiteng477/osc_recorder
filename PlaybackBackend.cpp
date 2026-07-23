@@ -12,6 +12,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <utility>
+#include <vector>
 
 namespace {
 constexpr quint32 FileMagic = 0x4f534352;
@@ -208,6 +211,98 @@ void PlaybackBackend::setView(double start, double duration)
     loadWindow();
 }
 void PlaybackBackend::moveView(double seconds) { setView(m_viewStart + seconds, m_viewDuration); }
+
+QVariantMap PlaybackBackend::measureWindow(int zeroBasedChannelId, double startSeconds, double endSeconds)
+{
+    QVariantMap result{{"valid", false}, {"periodValid", false}};
+    if (m_status != QStringLiteral("ready") || m_sampleRate <= 0 || endSeconds <= startSeconds)
+        return result;
+    const int sourceIndex = m_channelIds.indexOf(zeroBasedChannelId);
+    if (sourceIndex < 0)
+        return result;
+
+    const double samplePeriod = 1.0 / double(m_sampleRate);
+    const quint64 firstSample = quint64(std::max<qint64>(0, qint64(std::ceil((startSeconds - 1e-12) / samplePeriod))));
+    const qint64 lastSampleSigned = qint64(std::floor((endSeconds + 1e-12) / samplePeriod));
+    if (lastSampleSigned < 0)
+        return result;
+    const quint64 lastSample = quint64(lastSampleSigned);
+    if (lastSample < firstSample || lastSample - firstSample + 1 < 8)
+        return result;
+
+    double sum = 0.0, sumSquares = 0.0;
+    float minimum = std::numeric_limits<float>::infinity(), maximum = -std::numeric_limits<float>::infinity();
+    quint64 count = 0;
+    std::vector<std::pair<quint64, float>> samples;
+    samples.reserve(size_t(std::min<quint64>(lastSample - firstSample + 1, 262144)));
+    for (const Block &block : m_blocks) {
+        if (block.first + block.count <= firstSample || block.first > lastSample)
+            continue;
+        QByteArray payload;
+        if (!validateBlock(block, &payload))
+            return result;
+        QDataStream stream(payload);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+        for (quint32 sample = 0; sample < block.count; ++sample) {
+            float selected = 0.0F;
+            for (int source = 0; source < m_channelCount; ++source) {
+                float value = 0.0F;
+                stream >> value;
+                if (source == sourceIndex)
+                    selected = value;
+            }
+            const quint64 sampleIndex = block.first + sample;
+            if (sampleIndex < firstSample || sampleIndex > lastSample)
+                continue;
+            if (!std::isfinite(selected))
+                return result;
+            samples.emplace_back(sampleIndex, selected);
+            minimum = std::min(minimum, selected);
+            maximum = std::max(maximum, selected);
+            sum += selected;
+            sumSquares += double(selected) * selected;
+            ++count;
+        }
+    }
+    if (count < 8 || samples.size() != count)
+        return result;
+    const double mean = sum / double(count);
+    result.insert("valid", true);
+    result.insert("maximum", maximum);
+    result.insert("minimum", minimum);
+    result.insert("peakToPeak", double(maximum) - minimum);
+    result.insert("mean", mean);
+    result.insert("rms", std::sqrt(sumSquares / double(count)));
+
+    std::vector<double> crossings;
+    for (size_t index = 1; index < samples.size(); ++index) {
+        const float previous = samples[index - 1].second, current = samples[index].second;
+        if (previous <= mean && current > mean) {
+            const double span = double(current) - previous;
+            const double fraction = std::abs(span) > 1e-12 ? (mean - previous) / span : 0.0;
+            crossings.push_back((double(samples[index - 1].first) + std::clamp(fraction, 0.0, 1.0)) * samplePeriod);
+        }
+    }
+    if (crossings.size() < 3)
+        return result;
+    double periodSum = 0.0;
+    for (size_t index = 1; index < crossings.size(); ++index) periodSum += crossings[index] - crossings[index - 1];
+    const double period = periodSum / double(crossings.size() - 1);
+    if (!std::isfinite(period) || period <= 0.0)
+        return result;
+    double variance = 0.0;
+    for (size_t index = 1; index < crossings.size(); ++index) {
+        const double delta = crossings[index] - crossings[index - 1] - period;
+        variance += delta * delta;
+    }
+    if (std::sqrt(variance / double(crossings.size() - 1)) / period > 0.12)
+        return result;
+    result.insert("periodValid", true);
+    result.insert("period", period);
+    result.insert("frequency", 1.0 / period);
+    return result;
+}
 void PlaybackBackend::resetView() { setView(qMax(0.0, m_durationSeconds - m_viewDuration), m_viewDuration); }
 
 QUrl PlaybackBackend::suggestedExportUrl(const QString &rangeTag, const QString &format) const

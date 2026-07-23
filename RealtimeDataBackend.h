@@ -39,6 +39,12 @@ public:
     Q_INVOKABLE void refreshDisplaySnapshot(double windowStart, double windowEnd, double sampleRate, int plotWidth, const QVariantList &visibleChannels);
     Q_INVOKABLE double zeroCrossingFrequency(int channelIndex, double endTime, double durationSeconds) const;
     Q_INVOKABLE QVariantMap channelRange(int channelIndex, double startTime, double endTime) const;
+    // Uses the retained, undecimated raw samples only.  The map separates
+    // general statistics from period validity so a short window can still show
+    // amplitude while clearly reporting an unreliable frequency as "--".
+    Q_INVOKABLE QVariantMap measureWindow(int channelIndex, double startTime, double endTime,
+                                          const QString &thresholdMode, double threshold,
+                                          double hysteresis, const QString &edge) const;
 
 signals:
     void historyChanged();
