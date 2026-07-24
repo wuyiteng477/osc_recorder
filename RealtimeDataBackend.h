@@ -45,7 +45,12 @@ public:
     Q_INVOKABLE QVariantMap measureWindow(int channelIndex, double startTime, double endTime,
                                           const QString &thresholdMode, double threshold,
                                           double hysteresis, const QString &edge,
-                                          double lowThreshold, double highThreshold) const;
+                                          double lowThreshold, double highThreshold,
+                                          double areaReference) const;
+    Q_INVOKABLE QVariantMap measureDualWindow(int referenceChannelIndex, int measuredChannelIndex,
+                                              double startTime, double endTime,
+                                              const QString &thresholdMode, double threshold,
+                                              double hysteresis, const QString &edge) const;
 
 signals:
     void historyChanged();

@@ -45,9 +45,13 @@ Rectangle {
     property string draftMeasurementRange: "visible"
     property real draftLatestWindowSeconds: 0.1
     property var draftMeasurementChannels: []
+    property int draftDualReferenceChannel: -1
+    property int draftDualMeasurementChannel: -1
+    property bool dualPickerSelectsReference: true
     property var draftMeasurementItems: []
-    property var draftMeasurementItemsByCategory: ({ amplitude: [], time: [], count: [] })
+    property var draftMeasurementItemsByCategory: ({ amplitude: [], time: [], count: [], area: [] })
     property string draftMeasurementStatisticsMode: "full" // current or full
+    property real draftAreaReference: 0
     property string measurementSearch: ""
     property int measurementChannelBoard: 0
     property bool timeAdvancedExpanded: false
@@ -123,6 +127,51 @@ Rectangle {
         return ["risingEdgeCount", "fallingEdgeCount", "totalEdgeCount",
                 "positivePulseCount", "negativePulseCount"].indexOf(item) >= 0 ? qsTr("\u6b21") : ""
     }
+    function areaMeasurementItem(item) {
+        return ["positiveArea", "negativeArea", "netArea", "absoluteArea"].indexOf(item) >= 0
+    }
+    function areaMeasurementUnit(channelIndex) {
+        return engineeringUnit(channelIndex) + "\u00b7s"
+    }
+    function dualMeasurementUnit(item) {
+        if (item === "timeDelay") return "s"
+        if (item === "phaseDifference") return "\u00b0"
+        // RMS ratio is dimensionless.  Do not render a literal "1" beside
+        // its numeric value or in the result table's unit column.
+        if (item === "rmsRatio") return ""
+        if (item === "gainDb") return "dB"
+        return ""
+    }
+    function ensureDraftDualChannels() {
+        const available = selectableMeasurementChannels()
+        // The A/B pair is deliberately user-selected.  This function only
+        // removes selections that became unavailable; it must never silently
+        // substitute CH1/CH2 (or any other default pair).
+        if (available.indexOf(draftDualReferenceChannel) < 0)
+            draftDualReferenceChannel = -1
+        if (available.indexOf(draftDualMeasurementChannel) < 0
+                || draftDualMeasurementChannel === draftDualReferenceChannel)
+            draftDualMeasurementChannel = -1
+    }
+    function openDualChannelPicker(selectsReference) {
+        dualPickerSelectsReference = selectsReference
+        const selected = selectsReference ? draftDualReferenceChannel : draftDualMeasurementChannel
+        dualChannelPicker.selectedBoard = selected >= 0 ? Math.floor(selected / 8) : 0
+        dualChannelPicker.open()
+    }
+    function selectDualPickerChannel(channelIndex) {
+        if (dualPickerSelectsReference) {
+            draftDualReferenceChannel = channelIndex
+            if (draftDualMeasurementChannel === channelIndex)
+                draftDualMeasurementChannel = -1
+        } else {
+            draftDualMeasurementChannel = channelIndex
+            if (draftDualReferenceChannel === channelIndex)
+                draftDualReferenceChannel = -1
+        }
+        ensureDraftDualChannels()
+        dualChannelPicker.close()
+    }
     function measurementItemOptions(category) {
         if (category === "amplitude") return [
             { key: "maximum", text: qsTr("最大值") }, { key: "minimum", text: qsTr("最小值") },
@@ -161,6 +210,18 @@ Rectangle {
             { key: "positivePulseCount", name: qsTr("\u6b63\u8109\u51b2\u6570"), symbol: "P+", unit: qsTr("\u6b21"), description: qsTr("\u7a97\u53e3\u5185\u5b8c\u6574\u4e0a\u5347\u540e\u4e0b\u964d\u7684\u9ad8\u7535\u5e73\u8109\u51b2\u6570"), implemented: true },
             { key: "negativePulseCount", name: qsTr("\u8d1f\u8109\u51b2\u6570"), symbol: "P-", unit: qsTr("\u6b21"), description: qsTr("\u7a97\u53e3\u5185\u5b8c\u6574\u4e0b\u964d\u540e\u4e0a\u5347\u7684\u4f4e\u7535\u5e73\u8109\u51b2\u6570"), implemented: true }
         ]
+        const area = [
+            { key: "positiveArea", name: qsTr("\u6b63\u9762\u79ef"), symbol: "A+", unit: "area", description: qsTr("\u53c2\u8003\u503c\u4ee5\u4e0a\u90e8\u5206\u7684\u68af\u5f62\u79ef\u5206"), implemented: true },
+            { key: "negativeArea", name: qsTr("\u8d1f\u9762\u79ef"), symbol: "A-", unit: "area", description: qsTr("\u53c2\u8003\u503c\u4ee5\u4e0b\u90e8\u5206\u7684\u5e26\u7b26\u53f7\u79ef\u5206"), implemented: true },
+            { key: "netArea", name: qsTr("\u51c0\u9762\u79ef"), symbol: "Anet", unit: "area", description: qsTr("\u53c2\u8003\u503c\u4e0a\u4e0b\u504f\u5dee\u7684\u5e26\u7b26\u53f7\u79ef\u5206"), implemented: true },
+            { key: "absoluteArea", name: qsTr("\u7edd\u5bf9\u9762\u79ef"), symbol: "Aabs", unit: "area", description: qsTr("\u5168\u90e8\u504f\u5dee\u7edd\u5bf9\u503c\u7684\u68af\u5f62\u79ef\u5206"), implemented: true }
+        ]
+        const dual = [
+            { key: "timeDelay", name: qsTr("\u901a\u9053\u95f4\u65f6\u5ef6 \u0394t"), symbol: "\u0394t", unit: "s", description: qsTr("B \u76f8\u5bf9 A \u7684\u6709\u7b26\u53f7\u65f6\u95f4\u5dee"), implemented: true },
+            { key: "phaseDifference", name: qsTr("\u76f8\u4f4d\u5dee \u03c6"), symbol: "\u03c6", unit: "\u00b0", description: qsTr("\u7531\u65f6\u5ef6\u4e0e\u5171\u540c\u5468\u671f\u8ba1\u7b97\u7684\u76f8\u4f4d\u5dee"), implemented: true },
+            { key: "rmsRatio", name: qsTr("RMS\u6bd4\u503c"), symbol: "RMSB/RMSA", unit: "1", description: qsTr("\u6d4b\u91cf\u901a\u9053 B \u4e0e\u53c2\u8003\u901a\u9053 A \u7684 RMS \u6bd4\u503c"), implemented: true },
+            { key: "gainDb", name: qsTr("\u589e\u76ca dB"), symbol: "G", unit: "dB", description: qsTr("20\u00b7log10(RMSB/RMSA)"), implemented: true }
+        ]
         const reserved = {
             count: [{ key: "edgeCount", name: qsTr("边沿计数"), symbol: "N", unit: "count", description: qsTr("待实现"), implemented: false }],
             area: [{ key: "integral", name: qsTr("积分面积"), symbol: "∫", unit: "channel·s", description: qsTr("待实现"), implemented: false }],
@@ -168,7 +229,9 @@ Rectangle {
         }
         return category === "amplitude" ? amplitude
                 : category === "time" ? time.concat(timeExtensions)
-                : category === "count" ? count : reserved[category] || []
+                : category === "count" ? count
+                : category === "area" ? area
+                : category === "dual" ? dual : reserved[category] || []
     }
     function filteredMeasurementCatalogue() {
         const search = measurementSearch.trim().toLowerCase()
@@ -181,6 +244,7 @@ Rectangle {
         draftMeasurementCategory = category
         draftMeasurementItems = (selections[category] || []).slice()
         timeAdvancedExpanded = false
+        if (category === "dual") ensureDraftDualChannels()
     }
     function setDraftMeasurementItems(items) {
         draftMeasurementItems = items.slice()
@@ -204,7 +268,7 @@ Rectangle {
             draftMeasurementItems = selections[category].slice()
     }
     function selectedMeasurementItemSummary() {
-        const categories = ["amplitude", "time", "count"]
+        const categories = ["amplitude", "time", "count", "area", "dual"]
         const summary = []
         for (let categoryIndex = 0; categoryIndex < categories.length; ++categoryIndex) {
             const category = categories[categoryIndex]
@@ -246,6 +310,12 @@ Rectangle {
         for (let index = 0; index < options.length; ++index) if (options[index].key === item) return options[index].text
         return qsTr("本轮预留")
     }
+    function measurementSourceText(category, referenceChannelIndex, channelIndex) {
+        const measuredName = channelStore.channel(channelIndex).name
+        if (category === "dual" && referenceChannelIndex >= 0)
+            return channelStore.channel(referenceChannelIndex).name + " \u2192 " + measuredName
+        return measuredName
+    }
     function measurementValueText(value, unit) {
         if (!isFinite(value)) return "--"
         const numeric = Number(value)
@@ -255,7 +325,7 @@ Rectangle {
             if (Math.abs(numeric) < 1)
                 return (numeric * 1000).toFixed(3).replace(/\.0+$/, "") + " ms"
         }
-        return numeric.toFixed(4).replace(/\.0+$/, "") + (unit.length ? " " + unit : "")
+        return numeric.toFixed(4).replace(/\.0+$/, "") + (unit.length && unit !== "1" ? " " + unit : "")
     }
     function measurementInvalidReason(reason) {
         if (reason === "gap") return qsTr("\u7a97\u53e3\u5185\u5b58\u5728\u6570\u636e\u65ad\u5c42")
@@ -264,6 +334,15 @@ Rectangle {
         if (reason === "invalid-threshold-relation") return qsTr("\u4f4e\u9608\u503c\u3001\u4e2d\u9608\u503c\u3001\u9ad8\u9608\u503c\u5173\u7cfb\u65e0\u6548")
         if (reason === "threshold-not-crossed") return qsTr("\u672a\u68c0\u6d4b\u5230\u8db3\u591f\u7684\u540c\u5411\u9608\u503c\u8fb9\u6cbf")
         if (reason === "invalid-threshold") return qsTr("\u9608\u503c\u548c\u8fdf\u6ede\u5fc5\u987b\u843d\u5728\u5f53\u524d\u6ce2\u5f62\u5e45\u503c\u8303\u56f4\u5185")
+        if (reason === "invalid-area-reference") return qsTr("\u53c2\u8003\u503c\u65e0\u6548")
+        if (reason === "area-insufficient") return qsTr("\u7f3a\u5c11\u8db3\u591f\u7684\u8fde\u7eed\u6709\u6548\u6837\u672c")
+        if (reason === "invalid-dual-channels") return qsTr("\u53c2\u8003\u901a\u9053 A \u4e0e\u6d4b\u91cf\u901a\u9053 B \u5fc5\u987b\u4e0d\u540c")
+        if (reason === "dual-gap") return qsTr("\u53cc\u901a\u9053\u7a97\u53e3\u5185\u5b58\u5728\u6570\u636e\u65ad\u5c42")
+        if (reason === "dual-insufficient-edges") return qsTr("\u4e24\u901a\u9053\u81f3\u5c11\u9700\u8981 3 \u4e2a\u540c\u5411\u8fb9\u6cbf")
+        if (reason === "dual-frequency-mismatch") return qsTr("\u4e24\u901a\u9053\u5468\u671f\u6216\u9891\u7387\u4e0d\u4e00\u81f4")
+        if (reason === "dual-pairing-failed") return qsTr("\u65e0\u6cd5\u914d\u5bf9\u7a33\u5b9a\u7684\u540c\u5411\u8fb9\u6cbf")
+        if (reason === "reference-rms-zero") return qsTr("\u53c2\u8003\u901a\u9053 RMS \u8fc7\u5c0f")
+        if (reason === "measured-rms-zero") return qsTr("\u6d4b\u91cf\u901a\u9053 RMS \u8fc7\u5c0f\uff0c\u65e0\u6cd5\u8ba1\u7b97 dB")
         if (reason === "period-inconsistent" || reason === "period-unstable") return qsTr("\u76f8\u90bb\u8fb9\u6cbf\u5468\u671f\u4e0d\u4e00\u81f4")
         return qsTr("\u6570\u636e\u4e0d\u8db3")
     }
@@ -286,12 +365,36 @@ Rectangle {
             start = Math.max(0, end - Math.max(samplePeriodSeconds * 8, Number(task.latestWindowSeconds || .1)))
         }
         if (task.range === "latest100ms") start = Math.max(start, end - .1)
+        // Category, not a display unit, identifies a dual-channel task.
+        // RMS ratio intentionally has no unit; using the unit as the test
+        // made it fall through into single-channel measurement handling.
+        const dualItem = task.category === "dual"
+        if (dualItem) {
+            const dualRaw = realtimeData.measureDualWindow(Number(task.referenceChannelIndex), task.channelIndex,
+                                                           start, end, timeThresholdMode, timeManualThreshold,
+                                                           timeHysteresis, timeEdge)
+            const dualUnit = dualMeasurementUnit(taskItem)
+            const rmsItem = taskItem === "rmsRatio" || taskItem === "gainDb"
+            if (!dualRaw.valid)
+                return { valid: false, status: measurementInvalidReason(dualRaw.reason), unit: dualUnit }
+            if (rmsItem && !dualRaw.rmsValid)
+                return { valid: false, status: measurementInvalidReason(dualRaw.rmsReason || dualRaw.reason), unit: dualUnit }
+            if (!rmsItem && !dualRaw.edgeValid)
+                return { valid: false, status: measurementInvalidReason(dualRaw.edgeReason || dualRaw.reason), unit: dualUnit }
+            const dualValue = Number(dualRaw[taskItem])
+            if (!isFinite(dualValue))
+                return { valid: false, status: measurementInvalidReason(taskItem === "gainDb" ? (dualRaw.gainReason || dualRaw.rmsReason) : dualRaw.reason), unit: dualUnit }
+            return { valid: true, value: dualValue, status: qsTr("\u6709\u6548"), unit: dualUnit }
+        }
         const raw = realtimeData.measureWindow(task.channelIndex, start, end,
                                                timeThresholdMode, timeManualThreshold,
                                                timeHysteresis, timeEdge,
-                                               timeManualLowThreshold, timeManualHighThreshold)
+                                               timeManualLowThreshold, timeManualHighThreshold,
+                                               Number(task.areaReference !== undefined ? task.areaReference : 0))
         const timeUnit = timeMeasurementUnit(taskItem)
         const countUnit = countMeasurementUnit(taskItem)
+        const areaItem = areaMeasurementItem(taskItem)
+        const areaUnit = areaItem ? areaMeasurementUnit(task.channelIndex) : ""
         const timeItem = timeUnit.length > 0
         const countItem = countUnit.length > 0
         const edgePeriodItem = taskItem === "period" || taskItem === "frequency"
@@ -303,11 +406,13 @@ Rectangle {
             if (isFinite(Number(raw.lowThreshold))) timeAutoLowThreshold = Number(raw.lowThreshold)
             if (isFinite(Number(raw.highThreshold))) timeAutoHighThreshold = Number(raw.highThreshold)
         }
-        if (!raw.valid || (edgePeriodItem && !raw.periodValid)) {
+        if (!raw.valid || (edgePeriodItem && !raw.periodValid) || (areaItem && !raw.areaValid)) {
             if (timeItem)
                 return { valid: false, status: measurementInvalidReason(raw.reason), unit: timeUnit }
             if (countItem)
                 return { valid: false, status: measurementInvalidReason(raw.reason), unit: countUnit }
+            if (areaItem)
+                return { valid: false, status: measurementInvalidReason(raw.areaReason || raw.reason), unit: areaUnit }
             return { valid: false, status: qsTr("数据不足或存在断层"), unit: timeItem ? (taskItem === "period" ? "s" : "Hz") : engineeringUnit(task.channelIndex) }
         }
         const value = Number(raw[taskItem])
@@ -317,6 +422,8 @@ Rectangle {
             return { valid: true, value: value, status: qsTr("\u6709\u6548"), unit: timeUnit }
         if (isFinite(value) && countItem)
             return { valid: true, value: value, status: qsTr("\u6709\u6548"), unit: countUnit }
+        if (isFinite(value) && areaItem)
+            return { valid: true, value: value, status: qsTr("\u6709\u6548"), unit: areaUnit }
         if (!isFinite(value)) return { valid: false, status: qsTr("无效"), unit: "" }
         return { valid: true, value: value, status: qsTr("有效"), unit: timeItem ? (taskItem === "period" ? "s" : "Hz") : engineeringUnit(task.channelIndex) }
     }
@@ -369,12 +476,13 @@ Rectangle {
             measurementTasks.setProperty(index, "maximumValue", count === 1 ? result.value : Math.max(task.maximumValue, result.value))
         }
     }
-    function hasMeasurementTask(channelIndex, measurementItem, range) {
+    function hasMeasurementTask(channelIndex, measurementItem, range, referenceChannelIndex) {
         for (let taskIndex = 0; taskIndex < measurementTasks.count; ++taskIndex) {
             const task = measurementTasks.get(taskIndex)
             if (task.channelIndex === channelIndex
                     && (task.measurementItem === measurementItem || task.item === measurementItem)
-                    && task.range === range)
+                    && task.range === range
+                    && (referenceChannelIndex === undefined || task.referenceChannelIndex === referenceChannelIndex))
                 return true
         }
         return false
@@ -382,6 +490,13 @@ Rectangle {
     function pendingMeasurementTaskCount() {
         const entries = measurementCatalogue(draftMeasurementCategory).filter(entry => entry.implemented && draftMeasurementItems.indexOf(entry.key) >= 0)
         let pending = 0
+        if (draftMeasurementCategory === "dual") {
+            for (let itemPosition = 0; itemPosition < entries.length; ++itemPosition)
+                if (!hasMeasurementTask(draftDualMeasurementChannel, entries[itemPosition].key,
+                                        draftMeasurementRange, draftDualReferenceChannel))
+                    ++pending
+            return pending
+        }
         for (let channelPosition = 0; channelPosition < draftMeasurementChannels.length; ++channelPosition)
             for (let itemPosition = 0; itemPosition < entries.length; ++itemPosition)
                 if (!hasMeasurementTask(draftMeasurementChannels[channelPosition], entries[itemPosition].key, draftMeasurementRange))
@@ -389,7 +504,13 @@ Rectangle {
         return pending
     }
     function measurementTaskAddReason() {
-        if (!draftMeasurementChannels.length) return qsTr("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u901a\u9053")
+        if (draftMeasurementCategory === "dual") {
+            ensureDraftDualChannels()
+            if (draftDualReferenceChannel < 0 || draftDualMeasurementChannel < 0)
+                return qsTr("\u8bf7\u9009\u62e9\u4e24\u8def\u5df2\u542f\u7528\u901a\u9053")
+            if (draftDualReferenceChannel === draftDualMeasurementChannel)
+                return qsTr("\u53c2\u8003\u901a\u9053 A \u4e0e\u6d4b\u91cf\u901a\u9053 B \u5fc5\u987b\u4e0d\u540c")
+        } else if (!draftMeasurementChannels.length) return qsTr("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u901a\u9053")
         if (!draftMeasurementItems.length) return qsTr("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u5df2\u5b9e\u73b0\u6d4b\u91cf\u9879")
         const pending = pendingMeasurementTaskCount()
         if (!pending) return qsTr("\u5df2\u9009\u4efb\u52a1\u5747\u5df2\u5b58\u5728")
@@ -400,18 +521,36 @@ Rectangle {
     function addSelectedMeasurementTasks() {
         const entries = measurementCatalogue(draftMeasurementCategory).filter(entry => entry.implemented && draftMeasurementItems.indexOf(entry.key) >= 0)
         if (measurementTaskAddReason().length) return
+        if (draftMeasurementCategory === "dual") {
+            for (let itemPosition = 0; itemPosition < entries.length; ++itemPosition) {
+                const entry = entries[itemPosition]
+                if (hasMeasurementTask(draftDualMeasurementChannel, entry.key, draftMeasurementRange, draftDualReferenceChannel))
+                    continue
+                measurementTasks.append({ taskId: nextMeasurementTaskId++, channelIndex: draftDualMeasurementChannel,
+                    referenceChannelIndex: draftDualReferenceChannel, category: "dual", measurementItem: entry.key,
+                    item: entry.key, range: draftMeasurementRange, latestWindowSeconds: draftLatestWindowSeconds,
+                    paused: false, currentText: "--", minimumText: "--", maximumText: "--", averageText: "--",
+                    deviationText: "--", measurementCount: 0, runningMean: 0, runningM2: 0, minimumValue: 0,
+                    maximumValue: 0, lastAccumulatedLatestTime: -1, statisticsMode: draftMeasurementStatisticsMode,
+                    areaReference: 0, unit: dualMeasurementUnit(entry.key), status: qsTr("\u7b49\u5f85\u6570\u636e") })
+            }
+            refreshMeasurementTasks()
+            return
+        }
         for (let channelPosition = 0; channelPosition < draftMeasurementChannels.length; ++channelPosition) {
             for (let itemPosition = 0; itemPosition < entries.length; ++itemPosition) {
                 const channel = draftMeasurementChannels[channelPosition], entry = entries[itemPosition]
                 if (hasMeasurementTask(channel, entry.key, draftMeasurementRange))
                     continue
                 measurementTasks.append({ taskId: nextMeasurementTaskId++, channelIndex: channel, category: draftMeasurementCategory,
+                    referenceChannelIndex: -1,
                     measurementItem: entry.key, item: entry.key, range: draftMeasurementRange, latestWindowSeconds: draftLatestWindowSeconds, paused: false, currentText: "--", minimumText: "--", maximumText: "--",
                     averageText: "--", deviationText: "--", measurementCount: 0, runningMean: 0, runningM2: 0, minimumValue: 0, maximumValue: 0,
                     // -1 is outside the non-negative simulator clock and
                     // guarantees exactly one initial snapshot for a new task.
                     lastAccumulatedLatestTime: -1,
                     statisticsMode: draftMeasurementStatisticsMode,
+                    areaReference: draftAreaReference,
                     unit: entry.unit === "channel" ? engineeringUnit(channel) : entry.unit, status: qsTr("等待数据") })
             }
         }
@@ -430,7 +569,7 @@ Rectangle {
         measurementTasks.setProperty(index, "deviationText", "--")
     }
     function taskUsesThresholdRules(task) {
-        return task.category === "time" || task.category === "count"
+        return task.category === "time" || task.category === "count" || task.category === "dual"
                 || timeMeasurementUnit(task.measurementItem || task.item).length > 0
                 || countMeasurementUnit(task.measurementItem || task.item).length > 0
     }
@@ -484,9 +623,12 @@ Rectangle {
         draftMeasurementCategory = "amplitude"
         draftMeasurementRange = "visible"
         draftMeasurementChannels = [selectedChannelIndex]
+        draftDualReferenceChannel = -1
+        draftDualMeasurementChannel = -1
         draftMeasurementItems = []
-        draftMeasurementItemsByCategory = ({ amplitude: [], time: [], count: [] })
+        draftMeasurementItemsByCategory = ({ amplitude: [], time: [], count: [], area: [] })
         draftMeasurementStatisticsMode = "full"
+        draftAreaReference = 0
         measurementChannelBoard = Math.floor(selectedChannelIndex / 8)
         measurementSearch = ""
         timeAdvancedExpanded = false
@@ -787,8 +929,8 @@ Rectangle {
                                 { key: "amplitude", label: qsTr("\u5e45\u503c"), available: true },
                                 { key: "time", label: qsTr("\u65f6\u95f4"), available: true },
                                 { key: "count", label: qsTr("\u8ba1\u6570"), available: true },
-                                { key: "area", label: qsTr("\u9762\u79ef"), available: false },
-                                { key: "dual", label: qsTr("\u53cc\u901a\u9053"), available: false }
+                                { key: "area", label: qsTr("\u9762\u79ef"), available: true },
+                                { key: "dual", label: qsTr("\u53cc\u901a\u9053"), available: true }
                             ]
                             delegate: AppButton {
                                 required property var modelData
@@ -843,7 +985,7 @@ Rectangle {
                                         Label { text: modelData.name + "  " + modelData.symbol; color: modelData.implemented ? "#d9e4ec" : "#71818d"; font.pixelSize: 12; font.bold: true }
                                         Label { Layout.fillWidth: true; text: modelData.implemented ? modelData.description : qsTr("\u5f85\u5b9e\u73b0"); color: "#8fa3b4"; font.pixelSize: 10; elide: Text.ElideRight }
                                     }
-                                    Label { text: modelData.unit === "channel" ? qsTr("\u8ddf\u968f\u901a\u9053") : modelData.unit; color: "#7eb8c2"; font.pixelSize: 10 }
+                                    Label { text: modelData.unit === "channel" ? qsTr("\u8ddf\u968f\u901a\u9053") : (modelData.unit === "area" ? qsTr("\u901a\u9053\u00b7s") : modelData.unit); color: "#7eb8c2"; font.pixelSize: 10 }
                                 }
                             }
                         }
@@ -888,6 +1030,7 @@ Rectangle {
                             spacing: 7
                         Label { text: qsTr("\u4efb\u52a1\u914d\u7f6e"); color: "#8fa3b4"; font.pixelSize: 12; font.bold: true }
                         RowLayout {
+                            visible: root.draftMeasurementCategory !== "dual"
                             Layout.fillWidth: true
                             Label { Layout.fillWidth: true; text: qsTr("\u6570\u636e\u6e90\u901a\u9053\uff08\u53ef\u591a\u9009\uff09  \u5df2\u9009 ") + root.draftMeasurementChannels.length + qsTr(" \u8def"); color: "#8fa3b4"; font.pixelSize: 11 }
                             AppButton { text: qsTr("\u5168\u9009\u5df2\u542f\u7528"); implicitHeight: 24; enabled: root.selectableMeasurementChannels().length > 0; onClicked: root.selectAllMeasurementChannels() }
@@ -895,6 +1038,7 @@ Rectangle {
                             AppButton { text: qsTr("\u6e05\u7a7a"); implicitHeight: 24; enabled: root.draftMeasurementChannels.length > 0; onClicked: root.draftMeasurementChannels = [] }
                         }
                         Flow {
+                            visible: root.draftMeasurementCategory !== "dual"
                             Layout.fillWidth: true
                             spacing: 5
                             Repeater {
@@ -922,6 +1066,7 @@ Rectangle {
                         }
                         Label { Layout.fillWidth: true; text: qsTr("\u6e05\u96f6\u53ea\u6e05\u9664\u7edf\u8ba1\u5386\u53f2\uff0c\u4e0d\u5f71\u54cd\u5f53\u524d\u6d4b\u91cf\u503c\u6216\u4efb\u52a1\u914d\u7f6e\u3002"); color: "#71818d"; font.pixelSize: 10; wrapMode: Text.WordWrap }
                         Flow {
+                            visible: root.draftMeasurementCategory !== "dual"
                             Layout.fillWidth: true
                             spacing: 5
                             Repeater {
@@ -943,6 +1088,35 @@ Rectangle {
                                 font.pixelSize: 11
                             }
                         }
+                        RowLayout {
+                            visible: root.draftMeasurementCategory === "dual"
+                            Layout.fillWidth: true
+                            spacing: 6
+                            AppButton {
+                                Layout.fillWidth: true
+                                implicitHeight: 30
+                                text: qsTr("参考 A：") + (root.draftDualReferenceChannel >= 0 ? root.channelStore.channel(root.draftDualReferenceChannel).name : qsTr("选择通道"))
+                                onClicked: root.openDualChannelPicker(true)
+                            }
+                            Label { text: "\u2192"; color: "#7eb8c2"; font.pixelSize: 18; font.bold: true }
+                            AppButton {
+                                Layout.fillWidth: true
+                                implicitHeight: 30
+                                text: qsTr("测量 B：") + (root.draftDualMeasurementChannel >= 0 ? root.channelStore.channel(root.draftDualMeasurementChannel).name : qsTr("选择通道"))
+                                onClicked: root.openDualChannelPicker(false)
+                            }
+                        }
+                        Label {
+                            visible: root.draftMeasurementCategory === "dual"
+                            Layout.fillWidth: true
+                            text: root.draftDualReferenceChannel >= 0 && root.draftDualMeasurementChannel >= 0
+                                ? qsTr("当前配对：") + root.channelStore.channel(root.draftDualReferenceChannel).name
+                                  + " \u2192 " + root.channelStore.channel(root.draftDualMeasurementChannel).name
+                                : qsTr("请分别选择参考 A 和测量 B")
+                            color: root.draftDualReferenceChannel >= 0 && root.draftDualMeasurementChannel >= 0
+                                   && root.draftDualReferenceChannel !== root.draftDualMeasurementChannel ? "#7eb8c2" : "#e8a94b"
+                            font.pixelSize: 10
+                        }
                         Label { text: qsTr("\u6d4b\u91cf\u8303\u56f4"); color: "#8fa3b4"; font.pixelSize: 11 }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 5
@@ -959,6 +1133,21 @@ Rectangle {
                             AppButton { text: "1 s"; checkable: true; checked: root.draftLatestWindowSeconds === 1; selected: checked; implicitHeight: 24; onClicked: root.draftLatestWindowSeconds = 1 }
                             AppButton { text: "5 s"; checkable: true; checked: root.draftLatestWindowSeconds === 5; selected: checked; implicitHeight: 24; onClicked: root.draftLatestWindowSeconds = 5 }
                             Item { Layout.fillWidth: true }
+                        }
+                        RowLayout {
+                            visible: root.draftMeasurementCategory === "area"
+                            Layout.fillWidth: true
+                            Label { text: qsTr("\u53c2\u8003\u503c"); color: "#8fa3b4"; font.pixelSize: 11 }
+                            TextField {
+                                Layout.fillWidth: true
+                                implicitHeight: 25
+                                text: Number(root.draftAreaReference).toString()
+                                color: "#d9e4ec"
+                                validator: DoubleValidator { bottom: -1000000; top: 1000000; decimals: 6 }
+                                onEditingFinished: { const value = Number(text); if (isFinite(value)) root.draftAreaReference = value }
+                                background: Rectangle { color: "#1a2a36"; border.color: "#365467"; radius: 3 }
+                            }
+                            Label { text: qsTr("\u6309\u6bcf\u8def\u901a\u9053\u5de5\u7a0b\u5355\u4f4d"); color: "#71818d"; font.pixelSize: 10 }
                         }
                         Rectangle {
                             visible: root.draftMeasurementCategory === "time"
@@ -1080,7 +1269,14 @@ Rectangle {
                                 Label { visible: root.selectedMeasurementItemSummary().length === 0; text: qsTr("\u672a\u9009\u62e9"); color: "#71818d"; font.pixelSize: 10; height: parent.height; verticalAlignment: Text.AlignVCenter }
                             }
                         }
-                        Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("\u5df2\u9009\u901a\u9053 ") + root.draftMeasurementChannels.length + qsTr(" \u8def  \u00b7  \u5f53\u7c7b\u5df2\u9009\u9879 ") + root.draftMeasurementItems.length + qsTr(" \u9879  \u00b7  \u5c06\u521b\u5efa ") + root.pendingMeasurementTaskCount() + qsTr(" \u4e2a\u4efb\u52a1"); color: "#8fa3b4"; font.pixelSize: 11 }
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            text: root.draftMeasurementCategory === "dual"
+                                ? qsTr("已选配对 ") + (root.draftDualReferenceChannel >= 0 && root.draftDualMeasurementChannel >= 0 ? "1" : "0")
+                                  + qsTr(" 组  ·  当前类已选项 ") + root.draftMeasurementItems.length + qsTr(" 项  ·  将创建 ") + root.pendingMeasurementTaskCount() + qsTr(" 个任务")
+                                : qsTr("已选通道 ") + root.draftMeasurementChannels.length + qsTr(" 路  ·  当前类已选项 ") + root.draftMeasurementItems.length + qsTr(" 项  ·  将创建 ") + root.pendingMeasurementTaskCount() + qsTr(" 个任务")
+                            color: "#8fa3b4"; font.pixelSize: 11
+                        }
                     }
                     }
                 }
@@ -1100,6 +1296,99 @@ Rectangle {
                     AppButton { text: qsTr("\u6dfb\u52a0\u4efb\u52a1"); fillColor: "#168b7c"; enabled: root.measurementTaskAddReason().length === 0; onClicked: { root.addSelectedMeasurementTasks(); measurementConfigDialog.close() } }
                 }
             }
+    }
+
+    // Compact, board-grouped picker used by the dual-channel A/B controls.
+    // It avoids the long native ComboBox popup when 32/64 channels are enabled.
+    Popup {
+        id: dualChannelPicker
+        parent: Overlay.overlay
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(410, Overlay.overlay.width - 48)
+        height: Math.min(330, Overlay.overlay.height - 72)
+        modal: true
+        focus: true
+        padding: 0
+        closePolicy: Popup.NoAutoClose
+        property int selectedBoard: 0
+        background: Rectangle { color: "#132633"; border.color: "#365467"; radius: 6 }
+        contentItem: ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 46
+                color: "#1b3846"
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    Label {
+                        Layout.fillWidth: true
+                        text: root.dualPickerSelectsReference ? qsTr("选择参考通道 A") : qsTr("选择测量通道 B")
+                        color: "#e4eef3"; font.pixelSize: 14; font.bold: true
+                    }
+                    AppButton { text: "×"; implicitWidth: 28; implicitHeight: 26; onClicked: dualChannelPicker.close() }
+                }
+            }
+            Flow {
+                Layout.fillWidth: true
+                Layout.margins: 10
+                spacing: 5
+                Repeater {
+                    model: 8
+                    delegate: AppButton {
+                        required property int index
+                        readonly property int channelCount: root.measurementChannelsForBoard(index).length
+                        text: qsTr("板卡 ") + (index + 1)
+                        implicitWidth: 64
+                        implicitHeight: 25
+                        enabled: channelCount > 0
+                        checkable: true
+                        checked: dualChannelPicker.selectedBoard === index
+                        selected: checked
+                        onClicked: dualChannelPicker.selectedBoard = index
+                    }
+                }
+            }
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#315363" }
+            GridLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.margins: 12
+                columns: 4
+                rowSpacing: 8
+                columnSpacing: 8
+                Repeater {
+                    model: root.measurementChannelsForBoard(dualChannelPicker.selectedBoard)
+                    delegate: AppButton {
+                        required property int modelData
+                        readonly property bool picked: root.dualPickerSelectsReference
+                                                    ? root.draftDualReferenceChannel === modelData
+                                                    : root.draftDualMeasurementChannel === modelData
+                        readonly property bool otherSide: root.dualPickerSelectsReference
+                                                     ? root.draftDualMeasurementChannel === modelData
+                                                     : root.draftDualReferenceChannel === modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 32
+                        text: root.channelStore.channel(modelData).name
+                        enabled: !otherSide
+                        checkable: true
+                        checked: picked
+                        selected: checked
+                        onClicked: root.selectDualPickerChannel(modelData)
+                    }
+                }
+                Label {
+                    visible: root.measurementChannelsForBoard(dualChannelPicker.selectedBoard).length === 0
+                    Layout.columnSpan: 4
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    text: qsTr("该板卡没有已启用的采集通道")
+                    color: "#71818d"; font.pixelSize: 11
+                }
+            }
+        }
     }
 
     ColumnLayout {
@@ -1412,18 +1701,6 @@ Rectangle {
             }
 
             Label {
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 10
-                visible: root.manualDisplayPaused
-                text: qsTr("\u663e\u793a\u5df2\u6682\u505c")
-                color: "#f3c56b"
-                font.pixelSize: 12
-                font.bold: true
-                z: 2
-            }
-
-            Label {
                 anchors.centerIn: parent
                 visible: root.activeChannels.length === 0
                 text: qsTr("\u8bf7\u5728\u901a\u9053\u8bbe\u7f6e\u4e2d\u542f\u7528\u901a\u9053")
@@ -1571,7 +1848,7 @@ Rectangle {
                             anchors.fill: parent
                             anchors.leftMargin: 7
                             anchors.rightMargin: 7
-                            Label { text: qsTr("\u901a\u9053"); Layout.preferredWidth: 48; color: "#8fa3b4"; font.pixelSize: 10; background: Rectangle { color: "transparent" } }
+                            Label { text: qsTr("\u6570\u636e\u6e90"); Layout.preferredWidth: 68; color: "#8fa3b4"; font.pixelSize: 10; background: Rectangle { color: "transparent" } }
                             Label { text: qsTr("\u6d4b\u91cf\u9879"); Layout.fillWidth: true; color: "#8fa3b4"; font.pixelSize: 10; background: Rectangle { color: "transparent" } }
                         }
                     }
@@ -1657,6 +1934,7 @@ Rectangle {
                     ScrollBar.vertical: MeasurementScrollBar { }
                     delegate: Rectangle {
                         required property int channelIndex
+                        required property int referenceChannelIndex
                         required property string category
                         required property string measurementItem
                         required property string currentText
@@ -1687,7 +1965,7 @@ Rectangle {
                                     anchors.fill: parent
                                     anchors.leftMargin: 7
                                     anchors.rightMargin: 7
-                                    Label { text: root.channelStore.channel(channelIndex).name; Layout.preferredWidth: 48; color: root.channelStore.channel(channelIndex).color; font.pixelSize: 10 }
+                                    Label { text: root.measurementSourceText(category, referenceChannelIndex, channelIndex); Layout.preferredWidth: 64; color: root.channelStore.channel(channelIndex).color; font.pixelSize: 10; elide: Text.ElideRight }
                                     Label { text: root.measurementItemText(category, measurementItem); Layout.fillWidth: true; color: "#d9e4ec"; font.pixelSize: 10; elide: Text.ElideRight }
                                 }
                             }
@@ -1775,6 +2053,7 @@ Rectangle {
                                 delegate: Rectangle {
                                     required property int taskId
                                     required property int channelIndex
+                                    required property int referenceChannelIndex
                                     required property string category
                                     required property string measurementItem
                                     required property string currentText
@@ -1801,15 +2080,16 @@ Rectangle {
                                         clip: true
                                         Text {
                                             x: 7
-                                            width: 48
+                                            width: 68
                                             anchors.verticalCenter: parent.verticalCenter
-                                            text: root.channelStore.channel(channelIndex).name
+                                            text: root.measurementSourceText(category, referenceChannelIndex, channelIndex)
                                             color: root.channelStore.channel(channelIndex).color
                                             font.pixelSize: 10
                                             verticalAlignment: Text.AlignVCenter
+                                            elide: Text.ElideRight
                                         }
                                         Text {
-                                            x: 55
+                                            x: 75
                                             width: parent.width - x - 7
                                             anchors.verticalCenter: parent.verticalCenter
                                             text: root.measurementItemText(category, measurementItem)
@@ -1951,6 +2231,7 @@ Rectangle {
                             delegate: Item {
                                 required property int taskId
                                 required property int channelIndex
+                                required property int referenceChannelIndex
                                 required property string category
                                 required property string measurementItem
                                 required property string currentText
@@ -1972,16 +2253,16 @@ Rectangle {
                                 visible: y + height > 0 && y < measurementCanvasRows.height
                                 Text {
                                     x: 7
-                                    width: 48
+                                    width: 68
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: root.channelStore.channel(channelIndex).name
+                                    text: root.measurementSourceText(category, referenceChannelIndex, channelIndex)
                                     color: root.channelStore.channel(channelIndex).color
                                     font.pixelSize: 10
                                     elide: Text.ElideRight
                                 }
                                 Text {
-                                    x: 55
-                                    width: 99
+                                    x: 75
+                                    width: 79
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: root.measurementItemText(category, measurementItem)
                                     color: "#d9e4ec"

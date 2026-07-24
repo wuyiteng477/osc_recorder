@@ -40,7 +40,11 @@ float RealtimeDataBackend::valueFor(int channelIndex, quint64 sampleIndex) const
     const double sampleRate = 1.0 / m_sampleInterval;
     const double nyquist = sampleRate * .5;
     const int type = channelIndex % 8;
-    const double requestedFrequency = 70.0 + (channelId % 11) * 43.0 + (channelId / 8) * 17.0;
+    // CH1/CH2 share a stable fundamental for first-pass dual-channel
+    // delay/phase verification. Their waveform type, amplitude, phase and
+    // DC offset remain distinct; all other channels retain varied frequencies.
+    const double requestedFrequency = channelIndex < 2 ? 120.0
+            : 70.0 + (channelId % 11) * 43.0 + (channelId / 8) * 17.0;
     // The dual-tone source reserves headroom for its second component.
     const double maxFundamental = nyquist * (type == 3 ? .18 : .35);
     const double frequency = std::min(requestedFrequency, std::max(1.0, maxFundamental));
@@ -516,7 +520,8 @@ QVariantMap RealtimeDataBackend::channelRange(int channel, double start, double 
 QVariantMap RealtimeDataBackend::measureWindow(int channel, double startTime, double endTime,
                                                const QString &thresholdMode, double threshold,
                                                double hysteresis, const QString &edge,
-                                               double lowThreshold, double highThreshold) const
+                                               double lowThreshold, double highThreshold,
+                                               double areaReference) const
 {
     QVariantMap result{{"valid", false}, {"periodValid", false}, {"reason", QStringLiteral("data-insufficient")}};
     if (channel < 0 || channel >= ChannelCount || m_historyCount == 0 || endTime <= startTime)
@@ -562,6 +567,72 @@ QVariantMap RealtimeDataBackend::measureWindow(int channel, double startTime, do
     result.insert("rms", std::sqrt(sumSquares / double(count)));
     result.insert("hasGap", hasGap);
     result.insert("reason", hasGap ? QStringLiteral("gap") : QStringLiteral("period-unavailable"));
+
+    // Area measurements use retained, undecimated samples and the actual
+    // sampling interval.  Integrate only adjacent finite samples: an invalid
+    // point terminates the current segment, so an interruption can never be
+    // bridged by a fabricated trapezoid.
+    bool hasAreaSegment = false;
+    double positiveArea = 0.0;
+    double negativeArea = 0.0;
+    double absoluteArea = 0.0;
+    if (std::isfinite(areaReference)) {
+        double previousAreaValue = valueAt(channel, first);
+        bool previousAreaValid = std::isfinite(previousAreaValue);
+        for (quint64 index = first + 1; index <= last; ++index) {
+            const double currentAreaValue = valueAt(channel, index);
+            const bool currentAreaValid = std::isfinite(currentAreaValue);
+            if (previousAreaValid && currentAreaValid) {
+                hasAreaSegment = true;
+                const double firstDeviation = previousAreaValue - areaReference;
+                const double secondDeviation = currentAreaValue - areaReference;
+                const double dt = m_sampleInterval;
+                if (firstDeviation >= 0.0 && secondDeviation >= 0.0) {
+                    const double contribution = (firstDeviation + secondDeviation) * .5 * dt;
+                    positiveArea += contribution;
+                    absoluteArea += contribution;
+                } else if (firstDeviation <= 0.0 && secondDeviation <= 0.0) {
+                    const double contribution = (firstDeviation + secondDeviation) * .5 * dt;
+                    negativeArea += contribution;
+                    absoluteArea -= contribution;
+                } else {
+                    // The reference crossing splits the linear trapezoid into
+                    // two triangles.  This is exact for the linear model used
+                    // between the two raw samples, unlike clamping endpoints.
+                    const double firstFraction = std::clamp(-firstDeviation /
+                                                            (secondDeviation - firstDeviation),
+                                                            0.0, 1.0);
+                    const double firstDt = dt * firstFraction;
+                    const double secondDt = dt - firstDt;
+                    if (firstDeviation > 0.0) {
+                        const double positiveContribution = firstDeviation * .5 * firstDt;
+                        const double negativeContribution = secondDeviation * .5 * secondDt;
+                        positiveArea += positiveContribution;
+                        negativeArea += negativeContribution;
+                        absoluteArea += positiveContribution - negativeContribution;
+                    } else {
+                        const double negativeContribution = firstDeviation * .5 * firstDt;
+                        const double positiveContribution = secondDeviation * .5 * secondDt;
+                        negativeArea += negativeContribution;
+                        positiveArea += positiveContribution;
+                        absoluteArea += positiveContribution - negativeContribution;
+                    }
+                }
+            }
+            previousAreaValue = currentAreaValue;
+            previousAreaValid = currentAreaValid;
+        }
+    }
+    result.insert("areaValid", hasAreaSegment);
+    result.insert("areaReason", std::isfinite(areaReference)
+                  ? (hasAreaSegment ? QStringLiteral("valid") : QStringLiteral("area-insufficient"))
+                  : QStringLiteral("invalid-area-reference"));
+    if (hasAreaSegment) {
+        result.insert("positiveArea", positiveArea);
+        result.insert("negativeArea", negativeArea);
+        result.insert("netArea", positiveArea + negativeArea);
+        result.insert("absoluteArea", absoluteArea);
+    }
 
     // Edge period/frequency uses one threshold plus hysteresis.  Low/middle/
     // high thresholds belong to future rise/fall-time measurements and are
@@ -783,6 +854,211 @@ QVariantMap RealtimeDataBackend::measureWindow(int channel, double startTime, do
     result.insert("periodValid", true);
     result.insert("period", period);
     result.insert("frequency", 1.0 / period);
+    return result;
+}
+
+QVariantMap RealtimeDataBackend::measureDualWindow(int referenceChannel, int measuredChannel,
+                                                   double startTime, double endTime,
+                                                   const QString &thresholdMode, double threshold,
+                                                   double hysteresis, const QString &edge) const
+{
+    QVariantMap result{{"valid", false}, {"rmsValid", false}, {"edgeValid", false},
+                       {"reason", QStringLiteral("data-insufficient")}};
+    if (referenceChannel < 0 || referenceChannel >= ChannelCount
+            || measuredChannel < 0 || measuredChannel >= ChannelCount
+            || referenceChannel == measuredChannel || m_historyCount == 0 || endTime <= startTime) {
+        result.insert("reason", QStringLiteral("invalid-dual-channels"));
+        return result;
+    }
+
+    const quint64 first = firstSampleIndexAtOrAfter(startTime);
+    const quint64 last = lastSampleIndexAtOrBefore(endTime);
+    if (last < first || first < m_nextSample - m_historyCount || last >= m_nextSample
+            || last - first + 1 < 8)
+        return result;
+
+    double referenceSquares = 0.0;
+    double measuredSquares = 0.0;
+    quint64 validPairCount = 0;
+    bool hasGap = false;
+    float referenceMinimum = std::numeric_limits<float>::infinity();
+    float referenceMaximum = -std::numeric_limits<float>::infinity();
+    float measuredMinimum = std::numeric_limits<float>::infinity();
+    float measuredMaximum = -std::numeric_limits<float>::infinity();
+    for (quint64 index = first; index <= last; ++index) {
+        const float referenceValue = valueAt(referenceChannel, index);
+        const float measuredValue = valueAt(measuredChannel, index);
+        if (!std::isfinite(referenceValue) || !std::isfinite(measuredValue)) {
+            hasGap = true;
+            continue;
+        }
+        referenceSquares += double(referenceValue) * referenceValue;
+        measuredSquares += double(measuredValue) * measuredValue;
+        referenceMinimum = std::min(referenceMinimum, referenceValue);
+        referenceMaximum = std::max(referenceMaximum, referenceValue);
+        measuredMinimum = std::min(measuredMinimum, measuredValue);
+        measuredMaximum = std::max(measuredMaximum, measuredValue);
+        ++validPairCount;
+    }
+    if (validPairCount < 8) {
+        result.insert("reason", hasGap ? QStringLiteral("dual-gap") : QStringLiteral("data-insufficient"));
+        return result;
+    }
+    if (hasGap) {
+        result.insert("reason", QStringLiteral("dual-gap"));
+        return result;
+    }
+
+    result.insert("valid", true);
+    const double referenceRms = std::sqrt(referenceSquares / double(validPairCount));
+    const double measuredRms = std::sqrt(measuredSquares / double(validPairCount));
+    if (std::isfinite(referenceRms) && referenceRms > 1e-12 && std::isfinite(measuredRms)) {
+        const double ratio = measuredRms / referenceRms;
+        result.insert("rmsValid", true);
+        result.insert("rmsRatio", ratio);
+        if (ratio > 1e-15)
+            result.insert("gainDb", 20.0 * std::log10(ratio));
+        else
+            result.insert("gainReason", QStringLiteral("measured-rms-zero"));
+    } else {
+        result.insert("rmsReason", QStringLiteral("reference-rms-zero"));
+    }
+
+    struct EdgeSeries {
+        std::vector<double> times;
+        double period = std::numeric_limits<double>::quiet_NaN();
+        QString reason;
+    };
+    const bool automatic = thresholdMode != QStringLiteral("manual");
+    const bool falling = edge == QStringLiteral("falling");
+    const auto collectEdges = [this, first, last, automatic, threshold, hysteresis, falling]
+            (int channel, float minimum, float maximum) {
+        EdgeSeries series;
+        const double span = double(maximum) - minimum;
+        if (!std::isfinite(span) || span <= 1e-9) {
+            series.reason = QStringLiteral("threshold-not-crossed");
+            return series;
+        }
+        const double middle = automatic ? (double(minimum) + maximum) * .5 : threshold;
+        const double effectiveHysteresis = automatic ? span * .05 : std::max(0.0, hysteresis);
+        if (!std::isfinite(middle) || !std::isfinite(effectiveHysteresis)
+                || middle - effectiveHysteresis * .5 < minimum
+                || middle + effectiveHysteresis * .5 > maximum) {
+            series.reason = QStringLiteral("invalid-threshold");
+            return series;
+        }
+        const double lowerArm = middle - effectiveHysteresis * .5;
+        const double upperArm = middle + effectiveHysteresis * .5;
+        float previous = valueAt(channel, first);
+        bool armed = falling ? previous >= upperArm : previous <= lowerArm;
+        for (quint64 index = first + 1; index <= last; ++index) {
+            const float current = valueAt(channel, index);
+            if ((!falling && current <= lowerArm) || (falling && current >= upperArm))
+                armed = true;
+            const bool crossed = !falling
+                    ? (armed && previous < middle && current >= middle)
+                    : (armed && previous > middle && current <= middle);
+            if (crossed) {
+                const double delta = double(current) - previous;
+                const double fraction = std::abs(delta) > 1e-12
+                        ? std::clamp((middle - previous) / delta, 0.0, 1.0) : 0.0;
+                series.times.push_back(timeAt(index - 1) + fraction * m_sampleInterval);
+                armed = false;
+            }
+            previous = current;
+        }
+        if (series.times.size() < 3) {
+            series.reason = QStringLiteral("dual-insufficient-edges");
+            return series;
+        }
+        std::vector<double> periods;
+        periods.reserve(series.times.size() - 1);
+        double sum = 0.0;
+        for (std::size_t index = 1; index < series.times.size(); ++index) {
+            const double value = series.times[index] - series.times[index - 1];
+            if (!std::isfinite(value) || value <= 0.0) {
+                series.reason = QStringLiteral("period-inconsistent");
+                return series;
+            }
+            periods.push_back(value);
+            sum += value;
+        }
+        series.period = sum / double(periods.size());
+        double variance = 0.0;
+        for (const double value : periods) {
+            const double delta = value - series.period;
+            variance += delta * delta;
+        }
+        if (std::sqrt(variance / double(periods.size())) / series.period > .08) {
+            series.reason = QStringLiteral("period-inconsistent");
+            return series;
+        }
+        series.reason = QStringLiteral("valid");
+        return series;
+    };
+
+    const EdgeSeries referenceEdges = collectEdges(referenceChannel, referenceMinimum, referenceMaximum);
+    const EdgeSeries measuredEdges = collectEdges(measuredChannel, measuredMinimum, measuredMaximum);
+    if (referenceEdges.reason != QStringLiteral("valid") || measuredEdges.reason != QStringLiteral("valid")) {
+        result.insert("edgeReason", referenceEdges.reason != QStringLiteral("valid")
+                      ? referenceEdges.reason : measuredEdges.reason);
+        return result;
+    }
+    const double sharedPeriod = (referenceEdges.period + measuredEdges.period) * .5;
+    if (std::abs(referenceEdges.period - measuredEdges.period) / sharedPeriod > .05) {
+        result.insert("edgeReason", QStringLiteral("dual-frequency-mismatch"));
+        return result;
+    }
+
+    // Pair a single, monotonic edge sequence with one constant index offset.
+    // This rejects arbitrary nearest-neighbour pairing and handles the common
+    // case where one channel has an extra leading edge at the window boundary.
+    std::vector<double> bestDelays;
+    double bestDeviation = std::numeric_limits<double>::infinity();
+    for (int offset = -2; offset <= 2; ++offset) {
+        std::vector<double> delays;
+        for (std::size_t referenceIndex = 0; referenceIndex < referenceEdges.times.size(); ++referenceIndex) {
+            const int measuredIndex = int(referenceIndex) + offset;
+            if (measuredIndex < 0 || measuredIndex >= int(measuredEdges.times.size()))
+                continue;
+            const double delay = measuredEdges.times[std::size_t(measuredIndex)] - referenceEdges.times[referenceIndex];
+            if (std::abs(delay) <= sharedPeriod * .5)
+                delays.push_back(delay);
+        }
+        if (delays.size() < 3)
+            continue;
+        double sum = 0.0;
+        for (const double delay : delays) sum += delay;
+        const double mean = sum / double(delays.size());
+        double variance = 0.0;
+        for (const double delay : delays) {
+            const double difference = delay - mean;
+            variance += difference * difference;
+        }
+        const double deviation = std::sqrt(variance / double(delays.size()));
+        if (deviation > sharedPeriod * .08)
+            continue;
+        if (delays.size() > bestDelays.size()
+                || (delays.size() == bestDelays.size() && deviation < bestDeviation)) {
+            bestDelays = std::move(delays);
+            bestDeviation = deviation;
+        }
+    }
+    if (bestDelays.size() < 3) {
+        result.insert("edgeReason", QStringLiteral("dual-pairing-failed"));
+        return result;
+    }
+    double delaySum = 0.0;
+    for (const double delay : bestDelays) delaySum += delay;
+    const double timeDelay = delaySum / double(bestDelays.size());
+    double phaseDegrees = std::fmod(360.0 * timeDelay / sharedPeriod + 180.0, 360.0);
+    if (phaseDegrees < 0.0) phaseDegrees += 360.0;
+    phaseDegrees -= 180.0;
+    result.insert("edgeValid", true);
+    result.insert("timeDelay", timeDelay);
+    result.insert("phaseDifference", phaseDegrees);
+    result.insert("pairedEdgeCount", qlonglong(bestDelays.size()));
+    result.insert("period", sharedPeriod);
     return result;
 }
 
