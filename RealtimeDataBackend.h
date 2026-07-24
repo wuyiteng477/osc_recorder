@@ -44,7 +44,8 @@ public:
     // amplitude while clearly reporting an unreliable frequency as "--".
     Q_INVOKABLE QVariantMap measureWindow(int channelIndex, double startTime, double endTime,
                                           const QString &thresholdMode, double threshold,
-                                          double hysteresis, const QString &edge) const;
+                                          double hysteresis, const QString &edge,
+                                          double lowThreshold, double highThreshold) const;
 
 signals:
     void historyChanged();

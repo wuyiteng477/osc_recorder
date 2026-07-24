@@ -436,7 +436,7 @@ Rectangle {
         height: 360
         modal: true
         focus: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        closePolicy: Popup.NoAutoClose
         padding: 0
         background: Rectangle { color: "#15212c"; radius: 6; border.color: "#3b6172" }
         header: Rectangle {

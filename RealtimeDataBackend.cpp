@@ -515,7 +515,8 @@ QVariantMap RealtimeDataBackend::channelRange(int channel, double start, double 
 
 QVariantMap RealtimeDataBackend::measureWindow(int channel, double startTime, double endTime,
                                                const QString &thresholdMode, double threshold,
-                                               double hysteresis, const QString &edge) const
+                                               double hysteresis, const QString &edge,
+                                               double lowThreshold, double highThreshold) const
 {
     QVariantMap result{{"valid", false}, {"periodValid", false}, {"reason", QStringLiteral("data-insufficient")}};
     if (channel < 0 || channel >= ChannelCount || m_historyCount == 0 || endTime <= startTime)
@@ -588,6 +589,129 @@ QVariantMap RealtimeDataBackend::measureWindow(int channel, double startTime, do
         result.insert("reason", QStringLiteral("gap"));
         return result;
     }
+
+    // Pulse and transition measurements use the same undecimated samples as
+    // amplitude and edge-period measurements.  Every threshold crossing is
+    // located between adjacent samples by linear interpolation.
+    const double low = automatic ? double(minimum) + span * .10 : lowThreshold;
+    const double high = automatic ? double(minimum) + span * .90 : highThreshold;
+    result.insert("lowThreshold", low);
+    result.insert("highThreshold", high);
+    if (!std::isfinite(low) || !std::isfinite(high) || low >= high
+            || low < minimum || high > maximum) {
+        result.insert("reason", QStringLiteral("invalid-threshold-relation"));
+        return result;
+    }
+
+    const auto crossingTime = [this, channel](quint64 currentIndex, double previousValue,
+                                               double currentValue, double level) {
+        const double delta = currentValue - previousValue;
+        const double fraction = std::abs(delta) > 1e-12
+                ? std::clamp((level - previousValue) / delta, 0.0, 1.0) : 0.0;
+        Q_UNUSED(channel)
+        return timeAt(currentIndex - 1) + fraction * m_sampleInterval;
+    };
+    const auto average = [](const std::vector<double> &values) {
+        if (values.empty()) return std::numeric_limits<double>::quiet_NaN();
+        double total = 0.0;
+        for (const double value : values) total += value;
+        return total / double(values.size());
+    };
+
+    std::vector<double> risingEdges, fallingEdges, positiveWidths, negativeWidths;
+    std::vector<double> positiveDuty, negativeDuty, riseTimes, fallTimes;
+    const double pulseLowerArm = middle - effectiveHysteresis * .5;
+    const double pulseUpperArm = middle + effectiveHysteresis * .5;
+    bool highState = valueAt(channel, first) >= middle;
+    bool riseArmed = valueAt(channel, first) <= pulseLowerArm;
+    bool fallArmed = valueAt(channel, first) >= pulseUpperArm;
+    double pendingRiseLow = std::numeric_limits<double>::quiet_NaN();
+    double pendingFallHigh = std::numeric_limits<double>::quiet_NaN();
+
+    for (quint64 index = first + 1; index <= last; ++index) {
+        const double previousValue = valueAt(channel, index - 1);
+        const double currentValue = valueAt(channel, index);
+        if (!std::isfinite(previousValue) || !std::isfinite(currentValue)) {
+            highState = false; riseArmed = false; fallArmed = false;
+            pendingRiseLow = pendingFallHigh = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+
+        if (currentValue <= pulseLowerArm) riseArmed = true;
+        if (currentValue >= pulseUpperArm) fallArmed = true;
+        const bool risingMiddle = !highState && riseArmed
+                && previousValue < middle && currentValue >= middle;
+        const bool fallingMiddle = highState && fallArmed
+                && previousValue > middle && currentValue <= middle;
+        if (risingMiddle) {
+            const double time = crossingTime(index, previousValue, currentValue, middle);
+            risingEdges.push_back(time);
+            if (!fallingEdges.empty()) negativeWidths.push_back(time - fallingEdges.back());
+            if (!risingEdges.empty() && risingEdges.size() >= 2 && !fallingEdges.empty()) {
+                const double cycle = time - risingEdges[risingEdges.size() - 2];
+                const double highWidth = fallingEdges.back() - risingEdges[risingEdges.size() - 2];
+                if (cycle > 0.0 && highWidth >= 0.0 && highWidth <= cycle) {
+                    positiveDuty.push_back(highWidth / cycle);
+                    negativeDuty.push_back(1.0 - highWidth / cycle);
+                }
+            }
+            highState = true; riseArmed = false;
+        } else if (fallingMiddle) {
+            const double time = crossingTime(index, previousValue, currentValue, middle);
+            fallingEdges.push_back(time);
+            if (!risingEdges.empty()) positiveWidths.push_back(time - risingEdges.back());
+            highState = false; fallArmed = false;
+        }
+
+        // Low-to-high and high-to-low crossings for transition times.  A
+        // reverse crossing before the second threshold invalidates that
+        // incomplete transition instead of fabricating a duration.
+        if (previousValue < low && currentValue >= low)
+            pendingRiseLow = crossingTime(index, previousValue, currentValue, low);
+        if (std::isfinite(pendingRiseLow) && previousValue < high && currentValue >= high) {
+            const double reachedHigh = crossingTime(index, previousValue, currentValue, high);
+            if (reachedHigh >= pendingRiseLow) riseTimes.push_back(reachedHigh - pendingRiseLow);
+            pendingRiseLow = std::numeric_limits<double>::quiet_NaN();
+        }
+        if (previousValue > low && currentValue <= low)
+            pendingRiseLow = std::numeric_limits<double>::quiet_NaN();
+
+        if (previousValue > high && currentValue <= high)
+            pendingFallHigh = crossingTime(index, previousValue, currentValue, high);
+        if (std::isfinite(pendingFallHigh) && previousValue > low && currentValue <= low) {
+            const double reachedLow = crossingTime(index, previousValue, currentValue, low);
+            if (reachedLow >= pendingFallHigh) fallTimes.push_back(reachedLow - pendingFallHigh);
+            pendingFallHigh = std::numeric_limits<double>::quiet_NaN();
+        }
+        if (previousValue < high && currentValue >= high)
+            pendingFallHigh = std::numeric_limits<double>::quiet_NaN();
+    }
+
+    const double positiveWidth = average(positiveWidths);
+    const double negativeWidth = average(negativeWidths);
+    const double positiveDutyAverage = average(positiveDuty);
+    const double negativeDutyAverage = average(negativeDuty);
+    const double riseTime = average(riseTimes);
+    const double fallTime = average(fallTimes);
+    // Edge and pulse counters use exactly the hysteretic state machine above.
+    // A pulse is only appended when both of its boundary edges occurred inside
+    // this continuous window, so neither window boundaries nor gaps create a
+    // synthetic count.
+    result.insert("risingEdgeCount", qlonglong(risingEdges.size()));
+    result.insert("fallingEdgeCount", qlonglong(fallingEdges.size()));
+    result.insert("totalEdgeCount", qlonglong(risingEdges.size() + fallingEdges.size()));
+    result.insert("positivePulseCount", qlonglong(positiveWidths.size()));
+    result.insert("negativePulseCount", qlonglong(negativeWidths.size()));
+    if (std::isfinite(positiveWidth)) result.insert("positivePulseWidth", positiveWidth);
+    if (std::isfinite(negativeWidth)) result.insert("negativePulseWidth", negativeWidth);
+    if (std::isfinite(positiveDutyAverage)) result.insert("positiveDutyCycle", positiveDutyAverage * 100.0);
+    if (std::isfinite(negativeDutyAverage)) result.insert("negativeDutyCycle", negativeDutyAverage * 100.0);
+    if (std::isfinite(riseTime)) result.insert("riseTime", riseTime);
+    if (std::isfinite(fallTime)) result.insert("fallTime", fallTime);
+    result.insert("transitionReason", (std::isfinite(positiveWidth) || std::isfinite(negativeWidth)
+                                         || std::isfinite(positiveDutyAverage) || std::isfinite(riseTime)
+                                         || std::isfinite(fallTime))
+                                        ? QStringLiteral("valid") : QStringLiteral("insufficient-transitions"));
 
     // A discontinuity resets the edge detector and the preceding crossing.
     // We may still measure a complete period inside any later continuous

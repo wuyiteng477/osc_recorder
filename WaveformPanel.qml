@@ -46,17 +46,21 @@ Rectangle {
     property real draftLatestWindowSeconds: 0.1
     property var draftMeasurementChannels: []
     property var draftMeasurementItems: []
-    property var draftMeasurementItemsByCategory: ({ amplitude: [], time: [] })
+    property var draftMeasurementItemsByCategory: ({ amplitude: [], time: [], count: [] })
     property string draftMeasurementStatisticsMode: "full" // current or full
     property string measurementSearch: ""
     property int measurementChannelBoard: 0
     property bool timeAdvancedExpanded: false
     property string timeThresholdMode: "auto"
     property real timeManualThreshold: 0
+    property real timeManualLowThreshold: -0.5
+    property real timeManualHighThreshold: 0.5
     property real timeHysteresis: 0.05
     property string timeEdge: "rising"
     property real timeAutoThreshold: Number.NaN
     property real timeAutoHysteresis: Number.NaN
+    property real timeAutoLowThreshold: Number.NaN
+    property real timeAutoHighThreshold: Number.NaN
     readonly property bool timeCursorsFollowLiveWindow: simulationRunning && !manualDisplayPaused && !singleTriggerFrozen
     readonly property bool hasTimeCursors: cursorMode === "time" || cursorMode === "both"
     readonly property bool hasVoltageCursors: cursorMode === "voltage" || cursorMode === "both"
@@ -108,6 +112,17 @@ Rectangle {
         const channel = channelStore.channel(channelIndex)
         return channel && channel.engineeringUnit ? channel.engineeringUnit : "V"
     }
+    function timeMeasurementUnit(item) {
+        if (item === "frequency") return "Hz"
+        if (item === "positiveDutyCycle" || item === "negativeDutyCycle") return "%"
+        if (item === "period" || item === "positivePulseWidth" || item === "negativePulseWidth"
+                || item === "riseTime" || item === "fallTime") return "s"
+        return ""
+    }
+    function countMeasurementUnit(item) {
+        return ["risingEdgeCount", "fallingEdgeCount", "totalEdgeCount",
+                "positivePulseCount", "negativePulseCount"].indexOf(item) >= 0 ? qsTr("\u6b21") : ""
+    }
     function measurementItemOptions(category) {
         if (category === "amplitude") return [
             { key: "maximum", text: qsTr("最大值") }, { key: "minimum", text: qsTr("最小值") },
@@ -131,12 +146,29 @@ Rectangle {
             { key: "repetitionPeriod", name: qsTr("重复周期"), symbol: "Trep", unit: "s", description: qsTr("重复结构的时间间隔"), implemented: false },
             { key: "envelopeFrequency", name: qsTr("包络频率"), symbol: "fenv", unit: "Hz", description: qsTr("调制包络频率"), implemented: false }
         ]
+        const timeExtensions = [
+            { key: "positivePulseWidth", name: qsTr("\u6b63\u8109\u5bbd"), symbol: "T+", unit: "s", description: qsTr("\u4e2d\u9608\u503c\u4e4b\u95f4\u7684\u9ad8\u7535\u5e73\u6301\u7eed\u65f6\u95f4"), implemented: true },
+            { key: "negativePulseWidth", name: qsTr("\u8d1f\u8109\u5bbd"), symbol: "T-", unit: "s", description: qsTr("\u4e2d\u9608\u503c\u4e4b\u95f4\u7684\u4f4e\u7535\u5e73\u6301\u7eed\u65f6\u95f4"), implemented: true },
+            { key: "positiveDutyCycle", name: qsTr("\u6b63\u5360\u7a7a\u6bd4"), symbol: "D+", unit: "%", description: qsTr("\u9ad8\u7535\u5e73\u8109\u5bbd\u5360\u5b8c\u6574\u5468\u671f\u7684\u6bd4\u4f8b"), implemented: true },
+            { key: "negativeDutyCycle", name: qsTr("\u8d1f\u5360\u7a7a\u6bd4"), symbol: "D-", unit: "%", description: qsTr("\u4f4e\u7535\u5e73\u8109\u5bbd\u5360\u5b8c\u6574\u5468\u671f\u7684\u6bd4\u4f8b"), implemented: true },
+            { key: "riseTime", name: qsTr("\u4e0a\u5347\u65f6\u95f4"), symbol: "Tr", unit: "s", description: qsTr("\u4f4e\u9608\u503c\u5230\u9ad8\u9608\u503c\u7684\u4e0a\u5347\u8fc7\u6e21\u65f6\u95f4"), implemented: true },
+            { key: "fallTime", name: qsTr("\u4e0b\u964d\u65f6\u95f4"), symbol: "Tf", unit: "s", description: qsTr("\u9ad8\u9608\u503c\u5230\u4f4e\u9608\u503c\u7684\u4e0b\u964d\u8fc7\u6e21\u65f6\u95f4"), implemented: true }
+        ]
+        const count = [
+            { key: "risingEdgeCount", name: qsTr("\u4e0a\u5347\u6cbf\u6570"), symbol: "N+", unit: qsTr("\u6b21"), description: qsTr("\u5e26\u8fdf\u6ede\u72b6\u6001\u673a\u8bc6\u522b\u7684\u4e0a\u5347\u9608\u503c\u8de8\u8d8a\u6b21\u6570"), implemented: true },
+            { key: "fallingEdgeCount", name: qsTr("\u4e0b\u964d\u6cbf\u6570"), symbol: "N-", unit: qsTr("\u6b21"), description: qsTr("\u5e26\u8fdf\u6ede\u72b6\u6001\u673a\u8bc6\u522b\u7684\u4e0b\u964d\u9608\u503c\u8de8\u8d8a\u6b21\u6570"), implemented: true },
+            { key: "totalEdgeCount", name: qsTr("\u603b\u8fb9\u6cbf\u6570"), symbol: "Nall", unit: qsTr("\u6b21"), description: qsTr("\u4e0a\u5347\u6cbf\u4e0e\u4e0b\u964d\u6cbf\u7684\u603b\u6b21\u6570"), implemented: true },
+            { key: "positivePulseCount", name: qsTr("\u6b63\u8109\u51b2\u6570"), symbol: "P+", unit: qsTr("\u6b21"), description: qsTr("\u7a97\u53e3\u5185\u5b8c\u6574\u4e0a\u5347\u540e\u4e0b\u964d\u7684\u9ad8\u7535\u5e73\u8109\u51b2\u6570"), implemented: true },
+            { key: "negativePulseCount", name: qsTr("\u8d1f\u8109\u51b2\u6570"), symbol: "P-", unit: qsTr("\u6b21"), description: qsTr("\u7a97\u53e3\u5185\u5b8c\u6574\u4e0b\u964d\u540e\u4e0a\u5347\u7684\u4f4e\u7535\u5e73\u8109\u51b2\u6570"), implemented: true }
+        ]
         const reserved = {
             count: [{ key: "edgeCount", name: qsTr("边沿计数"), symbol: "N", unit: "count", description: qsTr("待实现"), implemented: false }],
             area: [{ key: "integral", name: qsTr("积分面积"), symbol: "∫", unit: "channel·s", description: qsTr("待实现"), implemented: false }],
             dual: [{ key: "phase", name: qsTr("相位差"), symbol: "Δφ", unit: "°", description: qsTr("待实现"), implemented: false }]
         }
-        return category === "amplitude" ? amplitude : category === "time" ? time : reserved[category] || []
+        return category === "amplitude" ? amplitude
+                : category === "time" ? time.concat(timeExtensions)
+                : category === "count" ? count : reserved[category] || []
     }
     function filteredMeasurementCatalogue() {
         const search = measurementSearch.trim().toLowerCase()
@@ -172,7 +204,7 @@ Rectangle {
             draftMeasurementItems = selections[category].slice()
     }
     function selectedMeasurementItemSummary() {
-        const categories = ["amplitude", "time"]
+        const categories = ["amplitude", "time", "count"]
         const summary = []
         for (let categoryIndex = 0; categoryIndex < categories.length; ++categoryIndex) {
             const category = categories[categoryIndex]
@@ -208,16 +240,28 @@ Rectangle {
         return draftMeasurementChannels.filter(channelIndex => Math.floor(channelIndex / 8) === boardIndex).length
     }
     function measurementItemText(category, item) {
+        const catalogueEntry = measurementCatalogue(category).find(entry => entry.key === item)
+        if (catalogueEntry) return catalogueEntry.name
         const options = measurementItemOptions(category)
         for (let index = 0; index < options.length; ++index) if (options[index].key === item) return options[index].text
         return qsTr("本轮预留")
     }
     function measurementValueText(value, unit) {
-        return isFinite(value) ? Number(value).toFixed(4).replace(/\.0+$/, "") + (unit.length ? " " + unit : "") : "--"
+        if (!isFinite(value)) return "--"
+        const numeric = Number(value)
+        if (unit === "s") {
+            if (Math.abs(numeric) < .001)
+                return (numeric * 1000000).toFixed(3).replace(/\.0+$/, "") + " µs"
+            if (Math.abs(numeric) < 1)
+                return (numeric * 1000).toFixed(3).replace(/\.0+$/, "") + " ms"
+        }
+        return numeric.toFixed(4).replace(/\.0+$/, "") + (unit.length ? " " + unit : "")
     }
     function measurementInvalidReason(reason) {
         if (reason === "gap") return qsTr("\u7a97\u53e3\u5185\u5b58\u5728\u6570\u636e\u65ad\u5c42")
         if (reason === "insufficient-edges") return qsTr("\u81f3\u5c11\u9700\u8981 3 \u4e2a\u540c\u5411\u8fb9\u6cbf")
+        if (reason === "insufficient-transitions") return qsTr("\u7f3a\u5c11\u5b8c\u6574\u7684\u9608\u503c\u8fc7\u6e21\u6216\u9ad8\u4f4e\u7535\u5e73\u533a\u95f4")
+        if (reason === "invalid-threshold-relation") return qsTr("\u4f4e\u9608\u503c\u3001\u4e2d\u9608\u503c\u3001\u9ad8\u9608\u503c\u5173\u7cfb\u65e0\u6548")
         if (reason === "threshold-not-crossed") return qsTr("\u672a\u68c0\u6d4b\u5230\u8db3\u591f\u7684\u540c\u5411\u9608\u503c\u8fb9\u6cbf")
         if (reason === "invalid-threshold") return qsTr("\u9608\u503c\u548c\u8fdf\u6ede\u5fc5\u987b\u843d\u5728\u5f53\u524d\u6ce2\u5f62\u5e45\u503c\u8303\u56f4\u5185")
         if (reason === "period-inconsistent" || reason === "period-unstable") return qsTr("\u76f8\u90bb\u8fb9\u6cbf\u5468\u671f\u4e0d\u4e00\u81f4")
@@ -244,18 +288,35 @@ Rectangle {
         if (task.range === "latest100ms") start = Math.max(start, end - .1)
         const raw = realtimeData.measureWindow(task.channelIndex, start, end,
                                                timeThresholdMode, timeManualThreshold,
-                                               timeHysteresis, timeEdge)
-        const timeItem = taskItem === "period" || taskItem === "frequency"
-        if (timeItem) {
+                                               timeHysteresis, timeEdge,
+                                               timeManualLowThreshold, timeManualHighThreshold)
+        const timeUnit = timeMeasurementUnit(taskItem)
+        const countUnit = countMeasurementUnit(taskItem)
+        const timeItem = timeUnit.length > 0
+        const countItem = countUnit.length > 0
+        const edgePeriodItem = taskItem === "period" || taskItem === "frequency"
+        if (edgePeriodItem) {
             if (isFinite(Number(raw.threshold))) timeAutoThreshold = Number(raw.threshold)
             if (isFinite(Number(raw.thresholdHysteresis))) timeAutoHysteresis = Number(raw.thresholdHysteresis)
         }
-        if (!raw.valid || (timeItem && !raw.periodValid)) {
+        if (timeItem) {
+            if (isFinite(Number(raw.lowThreshold))) timeAutoLowThreshold = Number(raw.lowThreshold)
+            if (isFinite(Number(raw.highThreshold))) timeAutoHighThreshold = Number(raw.highThreshold)
+        }
+        if (!raw.valid || (edgePeriodItem && !raw.periodValid)) {
             if (timeItem)
-                return { valid: false, status: measurementInvalidReason(raw.reason), unit: taskItem === "period" ? "s" : "Hz" }
+                return { valid: false, status: measurementInvalidReason(raw.reason), unit: timeUnit }
+            if (countItem)
+                return { valid: false, status: measurementInvalidReason(raw.reason), unit: countUnit }
             return { valid: false, status: qsTr("数据不足或存在断层"), unit: timeItem ? (taskItem === "period" ? "s" : "Hz") : engineeringUnit(task.channelIndex) }
         }
         const value = Number(raw[taskItem])
+        if (!isFinite(value) && timeItem)
+            return { valid: false, status: measurementInvalidReason(edgePeriodItem ? raw.reason : (raw.transitionReason || raw.reason)), unit: timeUnit }
+        if (isFinite(value) && timeItem && !edgePeriodItem)
+            return { valid: true, value: value, status: qsTr("\u6709\u6548"), unit: timeUnit }
+        if (isFinite(value) && countItem)
+            return { valid: true, value: value, status: qsTr("\u6709\u6548"), unit: countUnit }
         if (!isFinite(value)) return { valid: false, status: qsTr("无效"), unit: "" }
         return { valid: true, value: value, status: qsTr("有效"), unit: timeItem ? (taskItem === "period" ? "s" : "Hz") : engineeringUnit(task.channelIndex) }
     }
@@ -368,8 +429,40 @@ Rectangle {
         measurementTasks.setProperty(index, "averageText", "--")
         measurementTasks.setProperty(index, "deviationText", "--")
     }
+    function taskUsesThresholdRules(task) {
+        return task.category === "time" || task.category === "count"
+                || timeMeasurementUnit(task.measurementItem || task.item).length > 0
+                || countMeasurementUnit(task.measurementItem || task.item).length > 0
+    }
+    function resetFullMeasurementStatistics(predicate) {
+        for (let index = 0; index < measurementTasks.count; ++index) {
+            const task = measurementTasks.get(index)
+            if (task.statisticsMode === "full" && predicate(task))
+                clearMeasurementStatistics(index)
+        }
+    }
+    function resetVisibleWindowStatisticsForTimebase() {
+        // A timebase change changes the actual source span of a visible-window
+        // task.  Its accumulated values are therefore no longer comparable.
+        // Normal live scrolling and horizontal panning intentionally do not
+        // call this function.
+        resetFullMeasurementStatistics(task => task.range === "visible")
+        refreshMeasurementTasks()
+    }
+    function resetThresholdRuleStatistics() {
+        // Threshold mode, value, hysteresis and direction define the event
+        // detector itself.  Preserve amplitude task history, but start a new
+        // complete-statistics series for edge, pulse and count tasks.
+        resetFullMeasurementStatistics(task => taskUsesThresholdRules(task))
+        refreshMeasurementTasks()
+    }
     function toggleMeasurementTask(index) { measurementTasks.setProperty(index, "paused", !measurementTasks.get(index).paused) }
     function deleteMeasurementTask(index) { measurementTasks.remove(index) }
+    function clearAllMeasurementTasks() {
+        measurementTasks.clear()
+        if (measurementCanvasRows)
+            measurementCanvasRows.scrollOffset = 0
+    }
     function measurementTaskIndexById(taskId) {
         for (let taskIndex = 0; taskIndex < measurementTasks.count; ++taskIndex)
             if (measurementTasks.get(taskIndex).taskId === taskId) return taskIndex
@@ -392,7 +485,7 @@ Rectangle {
         draftMeasurementRange = "visible"
         draftMeasurementChannels = [selectedChannelIndex]
         draftMeasurementItems = []
-        draftMeasurementItemsByCategory = ({ amplitude: [], time: [] })
+        draftMeasurementItemsByCategory = ({ amplitude: [], time: [], count: [] })
         draftMeasurementStatisticsMode = "full"
         measurementChannelBoard = Math.floor(selectedChannelIndex / 8)
         measurementSearch = ""
@@ -415,7 +508,10 @@ Rectangle {
     onSharedWindowEndChanged: schedulePaint()
     onSharedLatestTimeChanged: schedulePaint()
     onSharedHistoryOffsetChanged: schedulePaint()
-    onTimePerDivMsChanged: schedulePaint()
+    onTimePerDivMsChanged: {
+        schedulePaint()
+        resetVisibleWindowStatisticsForTimebase()
+    }
     onDisplayModeChanged: schedulePaint()
     onGridVisibleChanged: schedulePaint()
     onSelectedChannelIndexChanged: schedulePaint()
@@ -520,11 +616,16 @@ Rectangle {
         anchors.centerIn: Overlay.overlay
         padding: 0
         modal: false
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        closePolicy: Popup.NoAutoClose
         background: Rectangle { color: "#142631"; border.color: "#3a6574"; radius: 5 }
         contentItem: ColumnLayout {
             anchors.margins: 10
             spacing: 6
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                AppButton { text: "×"; implicitWidth: 28; implicitHeight: 24; onClicked: cursorMenu.close() }
+            }
             Label { text: qsTr("光标"); color: "#d9e4ec"; font.bold: true; font.pixelSize: 14 }
             AppButton { text: qsTr("关闭"); Layout.fillWidth: true; checkable: true; checked: root.cursorMode === "off"; onClicked: { root.setCursorMode("off"); cursorMenu.close() } }
             AppButton { text: qsTr("时间光标"); Layout.fillWidth: true; checkable: true; checked: root.cursorMode === "time"; onClicked: { root.setCursorMode("time"); cursorMenu.close() } }
@@ -540,7 +641,7 @@ Rectangle {
         height: Math.min(570, Overlay.overlay.height - 40)
         modal: true
         focus: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        closePolicy: Popup.NoAutoClose
         padding: 0
         background: Rectangle { color: "#15212c"; radius: 6; border.color: "#3b6172" }
         header: Rectangle {
@@ -685,7 +786,7 @@ Rectangle {
                             model: [
                                 { key: "amplitude", label: qsTr("\u5e45\u503c"), available: true },
                                 { key: "time", label: qsTr("\u65f6\u95f4"), available: true },
-                                { key: "count", label: qsTr("\u8ba1\u6570"), available: false },
+                                { key: "count", label: qsTr("\u8ba1\u6570"), available: true },
                                 { key: "area", label: qsTr("\u9762\u79ef"), available: false },
                                 { key: "dual", label: qsTr("\u53cc\u901a\u9053"), available: false }
                             ]
@@ -885,15 +986,15 @@ Rectangle {
                                         Label { text: qsTr("\u9608\u503c\u6a21\u5f0f"); color: "#8fa3b4"; font.pixelSize: 11; font.bold: true }
                                         RowLayout {
                                             Layout.fillWidth: true; spacing: 5
-                                            AppButton { text: qsTr("\u81ea\u52a8"); checkable: true; checked: root.timeThresholdMode === "auto"; selected: checked; implicitHeight: 25; onClicked: { root.timeThresholdMode = "auto"; root.refreshMeasurementTasks() } }
-                                            AppButton { text: qsTr("\u624b\u52a8"); checkable: true; checked: root.timeThresholdMode === "manual"; selected: checked; implicitHeight: 25; onClicked: { root.timeThresholdMode = "manual"; root.refreshMeasurementTasks() } }
+                                            AppButton { text: qsTr("\u81ea\u52a8"); checkable: true; checked: root.timeThresholdMode === "auto"; selected: checked; implicitHeight: 25; onClicked: { if (root.timeThresholdMode !== "auto") { root.timeThresholdMode = "auto"; root.resetThresholdRuleStatistics() } } }
+                                            AppButton { text: qsTr("\u624b\u52a8"); checkable: true; checked: root.timeThresholdMode === "manual"; selected: checked; implicitHeight: 25; onClicked: { if (root.timeThresholdMode !== "manual") { root.timeThresholdMode = "manual"; root.resetThresholdRuleStatistics() } } }
                                             Item { Layout.fillWidth: true }
                                         }
                                         Label { text: qsTr("\u6d4b\u91cf\u8fb9\u6cbf"); color: "#8fa3b4"; font.pixelSize: 11; font.bold: true }
                                         RowLayout {
                                             Layout.fillWidth: true; spacing: 5
-                                            AppButton { text: qsTr("\u4e0a\u5347\u6cbf"); checkable: true; checked: root.timeEdge === "rising"; selected: checked; implicitHeight: 25; onClicked: { root.timeEdge = "rising"; root.refreshMeasurementTasks() } }
-                                            AppButton { text: qsTr("\u4e0b\u964d\u6cbf"); checkable: true; checked: root.timeEdge === "falling"; selected: checked; implicitHeight: 25; onClicked: { root.timeEdge = "falling"; root.refreshMeasurementTasks() } }
+                                            AppButton { text: qsTr("\u4e0a\u5347\u6cbf"); checkable: true; checked: root.timeEdge === "rising"; selected: checked; implicitHeight: 25; onClicked: { if (root.timeEdge !== "rising") { root.timeEdge = "rising"; root.resetThresholdRuleStatistics() } } }
+                                            AppButton { text: qsTr("\u4e0b\u964d\u6cbf"); checkable: true; checked: root.timeEdge === "falling"; selected: checked; implicitHeight: 25; onClicked: { if (root.timeEdge !== "falling") { root.timeEdge = "falling"; root.resetThresholdRuleStatistics() } } }
                                             Item { Layout.fillWidth: true }
                                         }
                                         Label {
@@ -903,6 +1004,14 @@ Rectangle {
                                                 : qsTr("\u624b\u52a8\u9608\u503c\u548c\u8fdf\u6ede\u4f1a\u7acb\u5373\u53c2\u4e0e\u8fb9\u6cbf\u5224\u5b9a")
                                             color: "#71818d"; font.pixelSize: 10; wrapMode: Text.WordWrap
                                         }
+                                        Label {
+                                            visible: root.timeThresholdMode === "auto"
+                                            Layout.fillWidth: true
+                                            text: qsTr("\u81ea\u52a8\u4f4e/\u9ad8\u9608\u503c\uff0810%/90%\uff09: ")
+                                                + (isFinite(root.timeAutoLowThreshold) ? Number(root.timeAutoLowThreshold).toFixed(4) : "--")
+                                                + " / " + (isFinite(root.timeAutoHighThreshold) ? Number(root.timeAutoHighThreshold).toFixed(4) : "--")
+                                            color: "#71818d"; font.pixelSize: 10
+                                        }
                                         RowLayout {
                                             visible: root.timeThresholdMode === "manual"
                                             Layout.fillWidth: true; spacing: 6
@@ -910,7 +1019,25 @@ Rectangle {
                                             TextField {
                                                 Layout.fillWidth: true; implicitHeight: 25; text: Number(root.timeManualThreshold).toString(); color: "#d9e4ec"
                                                 validator: DoubleValidator { bottom: -1000000; top: 1000000; decimals: 6 }
-                                                onEditingFinished: { const value = Number(text); if (isFinite(value)) { root.timeManualThreshold = value; root.refreshMeasurementTasks() } }
+                                                onEditingFinished: { const value = Number(text); if (isFinite(value) && root.timeManualThreshold !== value) { root.timeManualThreshold = value; root.resetThresholdRuleStatistics() } }
+                                                background: Rectangle { color: "#1a2a36"; border.color: "#365467"; radius: 3 }
+                                            }
+                                        }
+                                        RowLayout {
+                                            visible: root.timeThresholdMode === "manual"
+                                            Layout.fillWidth: true; spacing: 6
+                                            Label { text: qsTr("\u4f4e\u9608\u503c"); color: "#8fa3b4"; font.pixelSize: 11 }
+                                            TextField {
+                                                Layout.fillWidth: true; implicitHeight: 25; text: Number(root.timeManualLowThreshold).toString(); color: "#d9e4ec"
+                                                validator: DoubleValidator { bottom: -1000000; top: 1000000; decimals: 6 }
+                                                onEditingFinished: { const value = Number(text); if (isFinite(value) && root.timeManualLowThreshold !== value) { root.timeManualLowThreshold = value; root.resetThresholdRuleStatistics() } }
+                                                background: Rectangle { color: "#1a2a36"; border.color: "#365467"; radius: 3 }
+                                            }
+                                            Label { text: qsTr("\u9ad8\u9608\u503c"); color: "#8fa3b4"; font.pixelSize: 11 }
+                                            TextField {
+                                                Layout.fillWidth: true; implicitHeight: 25; text: Number(root.timeManualHighThreshold).toString(); color: "#d9e4ec"
+                                                validator: DoubleValidator { bottom: -1000000; top: 1000000; decimals: 6 }
+                                                onEditingFinished: { const value = Number(text); if (isFinite(value) && root.timeManualHighThreshold !== value) { root.timeManualHighThreshold = value; root.resetThresholdRuleStatistics() } }
                                                 background: Rectangle { color: "#1a2a36"; border.color: "#365467"; radius: 3 }
                                             }
                                         }
@@ -918,7 +1045,7 @@ Rectangle {
                                         TextField {
                                             Layout.fillWidth: true; implicitHeight: 25; text: Number(root.timeHysteresis).toString(); color: "#d9e4ec"
                                             validator: DoubleValidator { bottom: 0; top: 1000000; decimals: 6 }
-                                            onEditingFinished: { const value = Number(text); if (isFinite(value)) { root.timeHysteresis = value; root.refreshMeasurementTasks() } }
+                                            onEditingFinished: { const value = Number(text); if (isFinite(value) && root.timeHysteresis !== value) { root.timeHysteresis = value; root.resetThresholdRuleStatistics() } }
                                             background: Rectangle { color: "#1a2a36"; border.color: "#365467"; radius: 3 }
                                         }
                                     }
@@ -1493,7 +1620,26 @@ Rectangle {
                             Label { width: 56; height: parent.height; text: qsTr("\u72b6\u6001"); color: "#8fa3b4"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; background: Rectangle { color: "transparent" } }
                         }
                     }
-                    Rectangle { Layout.preferredWidth: 106; Layout.fillHeight: true; color: "#18313e"; Label { anchors.centerIn: parent; text: qsTr("\u64cd\u4f5c"); color: "#8fa3b4"; font.pixelSize: 10 } }
+                    Rectangle {
+                        Layout.preferredWidth: 106
+                        Layout.fillHeight: true
+                        color: "#18313e"
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 5
+                            anchors.rightMargin: 5
+                            spacing: 4
+                            Label { Layout.fillWidth: true; text: qsTr("\u64cd\u4f5c"); color: "#8fa3b4"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter }
+                            AppButton {
+                                text: qsTr("\u6e05\u7a7a")
+                                implicitWidth: 42
+                                implicitHeight: 22
+                                enabled: measurementTasks.count > 0
+                                fillColor: "#493b3a"
+                                onClicked: root.clearAllMeasurementTasks()
+                            }
+                        }
+                    }
                 }
                 Rectangle {
                     Layout.fillWidth: true

@@ -8,7 +8,7 @@ Dialog {
     signal diagnosticRequested()
     modal: true
     focus: true
-    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+    closePolicy: Popup.NoAutoClose
     width: Math.min(760, parent ? parent.width - 72 : 760)
     height: Math.min(520, parent ? parent.height - 72 : 520)
     anchors.centerIn: Overlay.overlay
